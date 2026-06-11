@@ -417,6 +417,21 @@ CREATE TABLE IF NOT EXISTS budgets (
   UNIQUE(account_id, month)
 );
 
+-- AI assistant conversation and persistent memory.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tools_used TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS assistant_memory (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  note TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_jl_journal ON journal_lines(journal_id);
 CREATE INDEX IF NOT EXISTS idx_jl_account ON journal_lines(account_id);
 CREATE INDEX IF NOT EXISTS idx_journals_date ON journals(date);
@@ -447,6 +462,11 @@ const DEFAULT_SETTINGS = {
   claim_next_number: '1001',
   default_due_days: '14',
   setup_complete: '0',
+  ai_provider: '',
+  ai_base_url: '',
+  ai_api_key: '',
+  ai_model: '',
+  ai_max_tokens: '2048',
   tax_label: 'GST',
   super_guarantee_pct: '12',   // AU super guarantee from 1 July 2025
 };

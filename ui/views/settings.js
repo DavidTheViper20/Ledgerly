@@ -56,6 +56,40 @@ VIEWS.settingsView = async function (main) {
           </form>
         </div>
 
+        <div class="card" id="ai-card">
+          <h2>AI assistant</h2>
+          <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0">
+            Powers the chat bubble in the bottom-right corner. Your key is stored only in your
+            local Ledgerly database and requests are sent directly to the endpoint you choose.
+            For a local model, run Ollama or LM Studio and pick "Local model".
+          </p>
+          <form id="ai-form-settings">
+            <div class="field-row">
+              <label class="field">Provider
+                <select name="ai_provider" id="ai-provider-sel">
+                  <option value="">Disabled</option>
+                  <option value="anthropic" ${s.ai_provider === 'anthropic' ? 'selected' : ''}>Anthropic (Claude)</option>
+                  <option value="openai" ${s.ai_provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+                  <option value="deepseek" ${s.ai_provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+                  <option value="local" ${s.ai_provider === 'local' ? 'selected' : ''}>Local model (Ollama / LM Studio)</option>
+                  <option value="custom" ${s.ai_provider === 'custom' ? 'selected' : ''}>Custom (OpenAI-compatible)</option>
+                </select>
+              </label>
+              <label class="field">Model<input name="ai_model" id="ai-model-inp" value="${esc(s.ai_model || '')}" placeholder="e.g. claude-sonnet-4-6" /></label>
+            </div>
+            <label class="field">Endpoint URL<input name="ai_base_url" id="ai-url-inp" value="${esc(s.ai_base_url || '')}" placeholder="auto-filled from provider" /></label>
+            <div class="field-row">
+              <label class="field">API key<input name="ai_api_key" type="password" value="${esc(s.ai_api_key || '')}" placeholder="not needed for most local models" /></label>
+              <label class="field">Max response tokens<input name="ai_max_tokens" value="${esc(s.ai_max_tokens || '2048')}" style="max-width:130px" /></label>
+            </div>
+            <div class="btn-row">
+              <button class="btn primary" type="submit">Save AI settings</button>
+              <button class="btn" type="button" id="ai-test">Test connection</button>
+              <span id="ai-test-result" style="font-size:12.5px;color:var(--ink-soft)"></span>
+            </div>
+          </form>
+        </div>
+
         <div class="card">
           <h2>Tax rates</h2>
           <table class="data">
@@ -84,6 +118,45 @@ VIEWS.settingsView = async function (main) {
       loadRefData();
     } catch (e) { showError(e); }
   });
+
+  const AI_PRESETS = {
+    anthropic: { url: 'https://api.anthropic.com', model: 'claude-sonnet-4-6' },
+    openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o' },
+    deepseek: { url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+    local: { url: 'http://localhost:11434/v1', model: 'llama3.1' },
+    custom: { url: '', model: '' },
+  };
+  document.getElementById('ai-provider-sel').addEventListener('change', (ev) => {
+    const p = AI_PRESETS[ev.target.value];
+    if (p) {
+      document.getElementById('ai-url-inp').value = p.url;
+      document.getElementById('ai-model-inp').value = p.model;
+    }
+  });
+  document.getElementById('ai-form-settings').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      await api('settings.update', Object.fromEntries(new FormData(ev.target).entries()));
+      toast('AI settings saved', 'success');
+      loadRefData();
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('ai-test').addEventListener('click', async () => {
+    const out = document.getElementById('ai-test-result');
+    out.textContent = 'Saving & testing…';
+    try {
+      await api('settings.update', Object.fromEntries(new FormData(document.getElementById('ai-form-settings')).entries()));
+      const r = await window.ledgerly.assistant('test');
+      out.textContent = '✓ Connected — model replied: ' + (r.reply || 'OK').slice(0, 60);
+      out.style.color = 'var(--green)';
+    } catch (e) {
+      out.textContent = '✗ ' + e.message;
+      out.style.color = 'var(--red)';
+    }
+  });
+  if (location.hash.includes('focus=ai')) {
+    document.getElementById('ai-card').scrollIntoView({ block: 'center' });
+  }
 
   document.getElementById('inv-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();

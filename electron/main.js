@@ -55,6 +55,25 @@ app.whenReady().then(() => {
     }
   });
 
+  const assistant = require('../src/services/assistant');
+  const ASSISTANT_METHODS = {
+    chat: (a) => assistant.chat(db, a),
+    history: () => assistant.history(db),
+    clear: () => assistant.clearHistory(db),
+    memories: () => assistant.memories(db),
+    forget: (a) => assistant.forget(db, a.id),
+    test: () => assistant.testConnection(db),
+  };
+  ipcMain.handle('assistant', async (_e, method, args) => {
+    try {
+      const fn = ASSISTANT_METHODS[method];
+      if (!fn) throw new Error('Unknown assistant method: ' + method);
+      return { ok: true, data: await fn(args || {}) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('export-pdf', async (_e, suggestedName) => {
     const { filePath, canceled } = await dialog.showSaveDialog(win, {
       defaultPath: suggestedName || 'document.pdf',
@@ -228,11 +247,74 @@ async function runSmokeTour(outDir) {
     fs.writeFileSync(path.join(outDir, 'interaction-reconciled.png'), img.toPNG());
   }
 
+  // --- interaction test 3: AI assistant end-to-end against a mock provider ---
+  const http = require('node:http');
+  const mockAi = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const payload = JSON.parse(body);
+      const hasToolResult = payload.messages.some(ms => ms.role === 'tool');
+      res.setHeader('content-type', 'application/json');
+      if (!hasToolResult) {
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 'tc1', type: 'function', function: { name: 'list_documents', arguments: '{"kind":"ACCREC","status":"AUTHORISED"}' } },
+        ] } }] }));
+      } else {
+        const toolMsg = payload.messages.find(ms => ms.role === 'tool');
+        const count = JSON.parse(toolMsg.content).length;
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant',
+          content: `You currently have **${count} invoices awaiting payment**. I checked your live ledger to confirm.` } }] }));
+      }
+    });
+  });
+  await new Promise(r => mockAi.listen(0, '127.0.0.1', r));
+  const mockPort = mockAi.address().port;
+  api.call(db, 'settings.update', {
+    ai_provider: 'custom', ai_base_url: `http://127.0.0.1:${mockPort}/v1`,
+    ai_model: 'mock-model', ai_api_key: '',
+  });
+
+  await win.webContents.executeJavaScript(`location.hash = '#/dashboard'; true`);
+  await sleep(600);
+  const chatOk = await win.webContents.executeJavaScript(`(async () => {
+    document.getElementById('ai-bubble').click();
+    await new Promise(r => setTimeout(r, 400));
+    const ta = document.getElementById('ai-text');
+    ta.value = 'How many invoices are awaiting payment?';
+    document.getElementById('ai-form').dispatchEvent(new Event('submit', { cancelable: true }));
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 250));
+      const msgs = document.querySelectorAll('#ai-msgs .ai-msg.assistant');
+      const last = msgs[msgs.length - 1];
+      if (last && /awaiting payment/.test(last.textContent) && !last.querySelector('.ai-thinking')) {
+        return last.textContent.includes('list_documents');
+      }
+    }
+    return false;
+  })()`);
+  if (!chatOk) errors.push('Assistant chat round-trip failed (no reply with tool usage rendered)');
+  {
+    const img = await win.webContents.capturePage();
+    fs.writeFileSync(path.join(outDir, 'interaction-assistant.png'), img.toPNG());
+  }
+  const chatHistory = api.call ? require('../src/services/assistant').history(db) : [];
+  if (chatHistory.length < 2) errors.push('Assistant history was not persisted');
+  mockAi.close();
+
+  // --- assistant settings screen ---
+  await win.webContents.executeJavaScript(`location.hash = '#/settings?focus=ai'; true`);
+  await sleep(600);
+  {
+    const img = await win.webContents.capturePage();
+    fs.writeFileSync(path.join(outDir, 'settings-ai.png'), img.toPNG());
+  }
+
   if (errors.length) {
     console.error('SMOKE ERRORS:\n' + errors.join('\n---\n'));
     app.exit(1);
   } else {
-    console.log(`SMOKE OK: ${routes.length} screens + 2 interactions verified, captured to ${outDir}`);
+    console.log(`SMOKE OK: ${routes.length} screens + 3 interactions verified, captured to ${outDir}`);
     app.exit(0);
   }
 }

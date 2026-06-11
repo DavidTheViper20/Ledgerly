@@ -15,4 +15,9 @@ contextBridge.exposeInMainWorld('ledgerly', {
   exportPdf(name) { return ipcRenderer.invoke('export-pdf', name); },
   openCsv() { return ipcRenderer.invoke('open-csv'); },
   capture(file) { return ipcRenderer.invoke('capture', file); },
+  async assistant(method, args) {
+    const res = await ipcRenderer.invoke('assistant', method, args);
+    if (!res.ok) throw new Error(res.error);
+    return res.data;
+  },
 });
