@@ -1,0 +1,130 @@
+'use strict';
+
+// Seeds a database with realistic sample data. Used by the smoke test and
+// available manually: node scripts/demo-seed.js /path/to/ledgerly.db
+
+const api = require('../src/api');
+
+function iso(d) { return d.toISOString().slice(0, 10); }
+function daysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return iso(d); }
+
+function seedDemo(db) {
+  const call = (m, a) => api.call(db, m, a);
+
+  call('settings.update', {
+    org_name: 'Demo Trading Co', org_email: 'accounts@demo.example',
+    org_address: '12 Harbour Street, Port City', org_tax_number: 'TX-998877',
+    base_currency: 'USD', setup_complete: '1',
+  });
+
+  const acme = call('contacts.save', { name: 'Acme Industries', email: 'ap@acme.example', phone: '555-0101', is_customer: true });
+  const beta = call('contacts.save', { name: 'Beta Studios', email: 'hello@beta.example', is_customer: true });
+  const gamma = call('contacts.save', { name: 'Gamma Web Services', email: 'finance@gamma.example', is_customer: true });
+  const office = call('contacts.save', { name: 'OfficeMart Supplies', is_supplier: true });
+  const landlord = call('contacts.save', { name: 'Harbour Property Trust', is_supplier: true });
+
+  const acc = (code) => db.prepare('SELECT * FROM accounts WHERE code=?').get(code);
+  const taxSales = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'Tax on Sales%'").get();
+  const taxPurch = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'Tax on Purchases%'").get();
+
+  const checking = call('bank.createAccount', { name: 'Business Checking', code: '090' });
+  const savings = call('bank.createAccount', { name: 'Business Savings', code: '091' });
+
+  call('items.save', {
+    code: 'CONSULT', name: 'Consulting (hourly)', sale_price_cents: 15000,
+    sale_account_id: acc('200').id, sale_tax_rate_id: taxSales.id, is_sold: 1,
+  });
+  call('items.save', {
+    code: 'SUPPORT', name: 'Support retainer (monthly)', sale_price_cents: 60000,
+    sale_account_id: acc('200').id, sale_tax_rate_id: taxSales.id, is_sold: 1,
+  });
+
+  // Sales invoices in various states
+  const mkInvoice = (contact, daysBack, dueIn, lines, approve = true) => {
+    const inv = call('invoices.save', {
+      kind: 'ACCREC', contactId: contact.id, issueDate: daysAgo(daysBack),
+      dueDate: daysAgo(daysBack - dueIn), taxMode: 'exclusive', lines,
+    });
+    if (approve) return call('invoices.approve', { id: inv.id });
+    return inv;
+  };
+  const sales = acc('200');
+
+  const inv1 = mkInvoice(acme, 120, 14, [
+    { description: 'Consulting — discovery phase', qty: 24, unitPriceCents: 15000, accountId: sales.id, taxRateId: taxSales.id },
+  ]);
+  call('payments.add', { invoiceId: inv1.id, bankAccountId: checking.id, date: daysAgo(100), amountCents: inv1.total_cents });
+
+  const inv2 = mkInvoice(beta, 45, 14, [
+    { description: 'Support retainer — May', qty: 1, unitPriceCents: 60000, accountId: sales.id, taxRateId: taxSales.id },
+    { description: 'Additional consulting', qty: 6, unitPriceCents: 15000, accountId: sales.id, taxRateId: taxSales.id },
+  ]); // overdue, unpaid
+
+  const inv3 = mkInvoice(gamma, 10, 14, [
+    { description: 'Website maintenance', qty: 8, unitPriceCents: 12500, accountId: sales.id, taxRateId: taxSales.id },
+  ]); // awaiting payment
+  call('payments.add', { invoiceId: inv3.id, bankAccountId: checking.id, date: daysAgo(3), amountCents: 50000 });
+
+  mkInvoice(acme, 2, 14, [
+    { description: 'Consulting — sprint 9', qty: 16, unitPriceCents: 15000, accountId: sales.id, taxRateId: taxSales.id },
+  ], false); // draft
+
+  // Bills
+  const rentBill = call('invoices.save', {
+    kind: 'ACCPAY', contactId: landlord.id, issueDate: daysAgo(35), dueDate: daysAgo(5),
+    number: 'HPT-2206', taxMode: 'none',
+    lines: [{ description: 'Office rent — last month', qty: 1, unitPriceCents: 180000, accountId: acc('469').id }],
+  });
+  call('invoices.approve', { id: rentBill.id });
+  call('payments.add', { invoiceId: rentBill.id, bankAccountId: checking.id, date: daysAgo(20), amountCents: 180000 });
+
+  const supplies = call('invoices.save', {
+    kind: 'ACCPAY', contactId: office.id, issueDate: daysAgo(12), dueDate: daysAgo(-10),
+    number: 'OM-44831', taxMode: 'exclusive',
+    lines: [{ description: 'Stationery and printer ink', qty: 1, unitPriceCents: 23000, accountId: acc('461').id, taxRateId: taxPurch.id }],
+  });
+  call('invoices.approve', { id: supplies.id }); // awaiting payment
+
+  // Quote
+  const q = call('quotes.save', {
+    contactId: beta.id, issueDate: daysAgo(7), expiryDate: daysAgo(-23),
+    title: 'Q3 support expansion', taxMode: 'exclusive',
+    lines: [{ description: 'Extended support retainer', qty: 3, unitPriceCents: 60000, accountId: sales.id, taxRateId: taxSales.id }],
+  });
+  call('quotes.setStatus', { id: q.id, status: 'SENT' });
+
+  // Spend/receive money + transfer
+  call('bank.saveTransaction', {
+    kind: 'SPEND', bankAccountId: checking.id, contactId: office.id, date: daysAgo(15),
+    reference: 'Card 4421', taxMode: 'inclusive',
+    lines: [{ description: 'Team lunch', qty: 1, unitPriceCents: 8600, accountId: acc('420').id }],
+  });
+  call('bank.saveTransaction', {
+    kind: 'RECEIVE', bankAccountId: savings.id, date: daysAgo(8),
+    reference: 'INT-MAY', taxMode: 'none',
+    lines: [{ description: 'Interest income', qty: 1, unitPriceCents: 1250, accountId: acc('270').id }],
+  });
+  call('bank.transfer', { fromAccountId: checking.id, toAccountId: savings.id, date: daysAgo(6), amountCents: 100000, reference: 'Monthly sweep' });
+
+  // Statement lines to reconcile (one auto-matchable, one needing create)
+  const csv = [
+    'Date,Payee,Description,Amount',
+    `${daysAgo(3)},GAMMA WEB SERVICES,Invoice payment,500.00`,
+    `${daysAgo(2)},CITY POWER,Electricity,-142.18`,
+    `${daysAgo(1)},STRIPE PAYOUT,Card settlement,830.00`,
+  ].join('\n');
+  call('bank.importStatement', { bankAccountId: checking.id, csv });
+
+  return { ok: true };
+}
+
+module.exports = { seedDemo };
+
+if (require.main === module) {
+  const file = process.argv[2];
+  if (!file) { console.error('Usage: node scripts/demo-seed.js /path/to/ledgerly.db'); process.exit(1); }
+  const dbm = require('../src/db');
+  const db = dbm.open(file);
+  seedDemo(db);
+  console.log('Demo data seeded into', file);
+}

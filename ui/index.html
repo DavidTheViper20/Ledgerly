@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Ledgerly</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand" data-go="#/dashboard">
+      <svg class="logo" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+        <rect x="2" y="2" width="28" height="28" rx="7" fill="#4f46e5"/>
+        <path d="M10 8v13a3 3 0 0 0 3 3h9" stroke="#fbbf24" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand-name">Ledgerly</span>
+      <span class="org-name" id="org-name"></span>
+    </div>
+    <nav id="mainnav">
+      <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+      <div class="menu" data-nav="business">
+        <button class="menu-btn">Business ▾</button>
+        <div class="menu-list">
+          <a href="#/invoices">Invoices</a>
+          <a href="#/quotes">Quotes</a>
+          <a href="#/bills">Bills to pay</a>
+          <a href="#/items">Products &amp; services</a>
+        </div>
+      </div>
+      <div class="menu" data-nav="accounting">
+        <button class="menu-btn">Accounting ▾</button>
+        <div class="menu-list">
+          <a href="#/bank">Bank accounts</a>
+          <a href="#/reports">Reports</a>
+          <a href="#/chart">Chart of accounts</a>
+          <a href="#/journals">Manual journals</a>
+        </div>
+      </div>
+      <a href="#/contacts" data-nav="contacts">Contacts</a>
+    </nav>
+    <div class="topbar-right">
+      <div class="menu">
+        <button class="menu-btn primary" id="quick-new">+ New ▾</button>
+        <div class="menu-list right">
+          <a href="#/invoices/new">Invoice</a>
+          <a href="#/quotes/new">Quote</a>
+          <a href="#/bills/new">Bill</a>
+          <a href="#/contacts/new">Contact</a>
+          <a href="#/bank/spend">Spend money</a>
+          <a href="#/bank/receive">Receive money</a>
+        </div>
+      </div>
+      <a class="icon-link" href="#/settings" title="Settings">⚙</a>
+    </div>
+  </header>
+
+  <main id="main"></main>
+  <div id="toast-host"></div>
+  <div id="modal-host"></div>
+
+  <script src="helpers.js"></script>
+  <script src="views/dashboard.js"></script>
+  <script src="views/contacts.js"></script>
+  <script src="views/sales.js"></script>
+  <script src="views/bank.js"></script>
+  <script src="views/accounting.js"></script>
+  <script src="views/reports.js"></script>
+  <script src="views/settings.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
