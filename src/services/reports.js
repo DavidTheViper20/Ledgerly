@@ -154,7 +154,8 @@ function agedDocuments(db, { kind, asAt }) {
   for (const d of docs) {
     const due = new Date(d.due_date + 'T00:00:00Z');
     const daysOver = Math.floor((ref - due) / 864e5);
-    const owing = d.total_cents - d.paid_cents;
+    // Foreign-currency documents are shown at their document exchange rate.
+    const owing = Math.round((d.total_cents - d.paid_cents) * (d.exchange_rate || 1));
     let bucket = 'current';
     if (daysOver > 90) bucket = 'b90_plus';
     else if (daysOver > 60) bucket = 'b61_90';
@@ -231,4 +232,108 @@ function cashSummary(db, { months = 6, to = null } = {}) {
   return out;
 }
 
-module.exports = { profitAndLoss, balanceSheet, trialBalance, agedDocuments, accountTransactions, taxSummary, cashSummary, fyStart };
+// ---------- BAS (Business Activity Statement) summary — Simpler BAS ----------
+// Estimates the GST and PAYG-withholding labels from posted journals.
+function basSummary(db, { from, to }) {
+  const taxAcc = systemAccount(db, 'TAX');
+  const gst = db.prepare(`SELECT COALESCE(SUM(jl.credit_cents),0) AS collected, COALESCE(SUM(jl.debit_cents),0) AS paid
+    FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
+    WHERE j.status='POSTED' AND jl.account_id=? AND j.date>=? AND j.date<=?`).get(taxAcc.id, from, to);
+  // G1 = gross sales (net revenue movement + GST collected)
+  const revenue = db.prepare(`SELECT COALESCE(SUM(jl.credit_cents - jl.debit_cents),0) AS net
+    FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id JOIN accounts a ON a.id = jl.account_id
+    WHERE j.status='POSTED' AND a.type IN ('REVENUE','OTHER_INCOME') AND j.date>=? AND j.date<=?`).get(from, to);
+  // W1/W2 from payroll control accounts (if used)
+  let w1 = 0, w2 = 0;
+  try {
+    const wagesExp = systemAccount(db, 'WAGES_EXP');
+    w1 = db.prepare(`SELECT COALESCE(SUM(jl.debit_cents - jl.credit_cents),0) AS s
+      FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
+      WHERE j.status='POSTED' AND jl.account_id=? AND j.date>=? AND j.date<=?`).get(wagesExp.id, from, to).s;
+    const payg = systemAccount(db, 'PAYG');
+    w2 = db.prepare(`SELECT COALESCE(SUM(jl.credit_cents - jl.debit_cents),0) AS s
+      FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id
+      WHERE j.status='POSTED' AND jl.account_id=? AND j.date>=? AND j.date<=? AND j.source_kind='pay_run'`)
+      .get(payg.id, from, to).s;
+  } catch { /* payroll accounts not present in very old files */ }
+  return {
+    from, to,
+    g1_total_sales_cents: revenue.net + gst.collected,
+    a1a_gst_on_sales_cents: gst.collected,
+    a1b_gst_on_purchases_cents: gst.paid,
+    w1_gross_wages_cents: w1,
+    w2_payg_withheld_cents: w2,
+    net_gst_cents: gst.collected - gst.paid,
+    total_obligation_cents: gst.collected - gst.paid + w2,
+  };
+}
+
+// ---------- short-term cash flow forecast ----------
+// Opening bank balance, then weekly buckets of AR due in / AP due out.
+function cashFlowForecast(db, { weeks = 8 } = {}) {
+  const opening = db.prepare(`SELECT COALESCE(SUM(jl.debit_cents - jl.credit_cents),0) AS s
+    FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id JOIN accounts a ON a.id = jl.account_id
+    WHERE j.status='POSTED' AND a.type='BANK'`).get().s;
+  const open = db.prepare(`SELECT kind, due_date, CAST(ROUND((total_cents - paid_cents) * exchange_rate) AS INTEGER) AS owing
+    FROM invoices WHERE status='AUTHORISED' AND kind IN ('ACCREC','ACCPAY')`).all();
+  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+  const buckets = [];
+  let running = opening;
+  for (let w = 0; w < weeks; w++) {
+    const start = new Date(today.getTime() + w * 7 * 864e5);
+    const end = new Date(start.getTime() + 6 * 864e5);
+    const startS = start.toISOString().slice(0, 10);
+    const endS = end.toISOString().slice(0, 10);
+    let inflow = 0, outflow = 0;
+    for (const d of open) {
+      const due = w === 0 ? (d.due_date <= endS) : (d.due_date >= startS && d.due_date <= endS);
+      if (!due) continue;
+      if (d.kind === 'ACCREC') inflow += d.owing; else outflow += d.owing;
+    }
+    running += inflow - outflow;
+    buckets.push({ week_start: startS, week_end: endS, in_cents: inflow, out_cents: outflow, balance_cents: running });
+  }
+  return { opening_cents: opening, weeks: buckets };
+}
+
+// ---------- budgets ----------
+
+function setBudgets(db, { rows }) {
+  // rows: [{ accountId, month: 'YYYY-MM', amountCents }]
+  const up = db.prepare(`INSERT INTO budgets (account_id, month, amount_cents) VALUES (?,?,?)
+    ON CONFLICT(account_id, month) DO UPDATE SET amount_cents = excluded.amount_cents`);
+  for (const r of rows || []) up.run(r.accountId, r.month, Math.round(r.amountCents || 0));
+  return { ok: true };
+}
+
+function getBudgets(db, { from, to }) {
+  return db.prepare('SELECT * FROM budgets WHERE month >= ? AND month <= ? ORDER BY account_id, month')
+    .all(from.slice(0, 7), to.slice(0, 7));
+}
+
+function budgetVsActual(db, { from, to }) {
+  const bals = allBalances(db, { from, to });
+  const budgets = {};
+  for (const b of getBudgets(db, { from, to })) {
+    budgets[b.account_id] = (budgets[b.account_id] || 0) + b.amount_cents;
+  }
+  const rows = [];
+  for (const a of accounts(db)) {
+    const cls = ACCOUNT_TYPES[a.type];
+    if (cls !== 'REVENUE' && cls !== 'EXPENSE') continue;
+    const actualRaw = bals[a.id] || 0;
+    const actual = cls === 'REVENUE' ? -actualRaw : actualRaw;
+    const budget = budgets[a.id] || 0;
+    if (!actual && !budget) continue;
+    rows.push({
+      code: a.code, name: a.name, class: cls,
+      actual_cents: actual, budget_cents: budget, variance_cents: actual - budget,
+    });
+  }
+  return { from, to, rows };
+}
+
+module.exports = {
+  profitAndLoss, balanceSheet, trialBalance, agedDocuments, accountTransactions, taxSummary,
+  cashSummary, fyStart, basSummary, cashFlowForecast, setBudgets, getBudgets, budgetVsActual,
+};

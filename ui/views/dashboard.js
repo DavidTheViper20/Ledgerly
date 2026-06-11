@@ -97,28 +97,28 @@ VIEWS.setup = async function (main) {
           <div class="field-row">
             <label class="field">Base currency
               <select name="base_currency">
-                ${['USD', 'GBP', 'EUR', 'AUD', 'NZD', 'CAD', 'ZAR', 'SGD'].map(c =>
-                  `<option ${c === (s.base_currency || 'USD') ? 'selected' : ''}>${c}</option>`).join('')}
+                ${['AUD', 'USD', 'GBP', 'EUR', 'NZD', 'CAD', 'ZAR', 'SGD'].map(c =>
+                  `<option ${c === (s.base_currency || 'AUD') ? 'selected' : ''}>${c}</option>`).join('')}
               </select>
             </label>
             <label class="field">Financial year end
               <select name="fy_end_month">
                 ${['January','February','March','April','May','June','July','August','September','October','November','December']
-                  .map((m, i) => `<option value="${i + 1}" ${String(i + 1) === (s.fy_end_month || '12') ? 'selected' : ''}>${m}</option>`).join('')}
+                  .map((m, i) => `<option value="${i + 1}" ${String(i + 1) === (s.fy_end_month || '6') ? 'selected' : ''}>${m}</option>`).join('')}
               </select>
             </label>
           </div>
           <div class="field-row">
-            <label class="field">Tax registration number (optional)
-              <input name="org_tax_number" value="${esc(s.org_tax_number)}" />
+            <label class="field">ABN (optional)
+              <input name="org_tax_number" value="${esc(s.org_tax_number)}" placeholder="51 824 753 556" />
             </label>
             <label class="field">Email (optional)
               <input name="org_email" value="${esc(s.org_email)}" />
             </label>
           </div>
           <p style="color:var(--ink-soft);font-size:12.5px">
-            A standard chart of accounts and editable tax rates (20% default) have been created for you.
-            You can change everything later in Settings.
+            Set up for Australia: 10% GST tax rates, financial year ending 30 June, BAS reporting
+            and a standard chart of accounts are ready to go. Everything can be changed later in Settings.
           </p>
           <div class="btn-row">
             <button class="btn primary" type="submit">Start using Ledgerly</button>

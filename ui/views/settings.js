@@ -14,7 +14,7 @@ VIEWS.settingsView = async function (main) {
           <label class="field">Legal / trading name<input name="org_legal_name" value="${esc(s.org_legal_name)}" /></label>
           <div class="field-row">
             <label class="field">Email<input name="org_email" value="${esc(s.org_email)}" /></label>
-            <label class="field">Tax number<input name="org_tax_number" value="${esc(s.org_tax_number)}" /></label>
+            <label class="field">ABN<input name="org_tax_number" value="${esc(s.org_tax_number)}" /></label>
           </div>
           <label class="field">Address<textarea name="org_address" rows="2">${esc(s.org_address)}</textarea></label>
           <div class="field-row">
@@ -49,7 +49,8 @@ VIEWS.settingsView = async function (main) {
             </div>
             <div class="field-row">
               <label class="field">Default due days<input name="default_due_days" value="${esc(s.default_due_days)}" /></label>
-              <label class="field">Tax label (e.g. VAT, GST)<input name="tax_label" value="${esc(s.tax_label)}" /></label>
+              <label class="field">Tax label (e.g. GST)<input name="tax_label" value="${esc(s.tax_label)}" /></label>
+              <label class="field">Super guarantee %<input name="super_guarantee_pct" value="${esc(s.super_guarantee_pct || '12')}" /></label>
             </div>
             <button class="btn primary" type="submit">Save invoice settings</button>
           </form>

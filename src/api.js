@@ -9,6 +9,11 @@ const ledger = require('./services/ledger');
 const docs = require('./services/docs');
 const bank = require('./services/bank');
 const reports = require('./services/reports');
+const purchasing = require('./services/purchasing');
+const expenses = require('./services/expenses');
+const assets = require('./services/assets');
+const projects = require('./services/projects');
+const payroll = require('./services/payroll');
 
 // ---------- contacts ----------
 const contacts = {
@@ -22,10 +27,10 @@ const contacts = {
     sql += ' ORDER BY name COLLATE NOCASE LIMIT 1000';
     const rows = db.prepare(sql).all(...params);
     for (const c of rows) {
-      const rec = db.prepare(`SELECT COALESCE(SUM(total_cents - paid_cents),0) AS owed FROM invoices
-        WHERE contact_id = ? AND kind='ACCREC' AND status='AUTHORISED'`).get(c.id);
-      const pay = db.prepare(`SELECT COALESCE(SUM(total_cents - paid_cents),0) AS owed FROM invoices
-        WHERE contact_id = ? AND kind='ACCPAY' AND status='AUTHORISED'`).get(c.id);
+      const rec = db.prepare(`SELECT COALESCE(SUM(CAST(ROUND((total_cents - paid_cents) * exchange_rate) AS INTEGER)),0) AS owed
+        FROM invoices WHERE contact_id = ? AND kind='ACCREC' AND status='AUTHORISED'`).get(c.id);
+      const pay = db.prepare(`SELECT COALESCE(SUM(CAST(ROUND((total_cents - paid_cents) * exchange_rate) AS INTEGER)),0) AS owed
+        FROM invoices WHERE contact_id = ? AND kind='ACCPAY' AND status='AUTHORISED'`).get(c.id);
       c.they_owe_cents = rec.owed;
       c.you_owe_cents = pay.owed;
     }
@@ -36,6 +41,10 @@ const contacts = {
     if (!c) throw new Error('Contact not found');
     c.invoices = docs.listInvoices(db, { kind: 'ACCREC', contactId: id });
     c.bills = docs.listInvoices(db, { kind: 'ACCPAY', contactId: id });
+    c.credit_notes = [
+      ...docs.listInvoices(db, { kind: 'ACCRECCREDIT', contactId: id }),
+      ...docs.listInvoices(db, { kind: 'ACCPAYCREDIT', contactId: id }),
+    ];
     return c;
   },
   save(db, data) {
@@ -215,22 +224,16 @@ const settings = {
 const dashboard = {
   data(db) {
     const banks = bank.listBankAccounts(db);
-    const inv = db.prepare(`SELECT
-        COALESCE(SUM(CASE WHEN status IN ('DRAFT','SUBMITTED') THEN total_cents END),0) AS draft_cents,
-        COALESCE(SUM(CASE WHEN status='AUTHORISED' THEN total_cents - paid_cents END),0) AS awaiting_cents,
-        COALESCE(SUM(CASE WHEN status='AUTHORISED' AND due_date < date('now') THEN total_cents - paid_cents END),0) AS overdue_cents,
+    const sums = (kind) => db.prepare(`SELECT
+        COALESCE(SUM(CASE WHEN status IN ('DRAFT','SUBMITTED') THEN CAST(ROUND(total_cents * exchange_rate) AS INTEGER) END),0) AS draft_cents,
+        COALESCE(SUM(CASE WHEN status='AUTHORISED' THEN CAST(ROUND((total_cents - paid_cents) * exchange_rate) AS INTEGER) END),0) AS awaiting_cents,
+        COALESCE(SUM(CASE WHEN status='AUTHORISED' AND due_date < date('now') THEN CAST(ROUND((total_cents - paid_cents) * exchange_rate) AS INTEGER) END),0) AS overdue_cents,
         COUNT(CASE WHEN status IN ('DRAFT','SUBMITTED') THEN 1 END) AS draft_count,
         COUNT(CASE WHEN status='AUTHORISED' THEN 1 END) AS awaiting_count,
         COUNT(CASE WHEN status='AUTHORISED' AND due_date < date('now') THEN 1 END) AS overdue_count
-      FROM invoices WHERE kind='ACCREC'`).get();
-    const bills = db.prepare(`SELECT
-        COALESCE(SUM(CASE WHEN status IN ('DRAFT','SUBMITTED') THEN total_cents END),0) AS draft_cents,
-        COALESCE(SUM(CASE WHEN status='AUTHORISED' THEN total_cents - paid_cents END),0) AS awaiting_cents,
-        COALESCE(SUM(CASE WHEN status='AUTHORISED' AND due_date < date('now') THEN total_cents - paid_cents END),0) AS overdue_cents,
-        COUNT(CASE WHEN status IN ('DRAFT','SUBMITTED') THEN 1 END) AS draft_count,
-        COUNT(CASE WHEN status='AUTHORISED' THEN 1 END) AS awaiting_count,
-        COUNT(CASE WHEN status='AUTHORISED' AND due_date < date('now') THEN 1 END) AS overdue_count
-      FROM invoices WHERE kind='ACCPAY'`).get();
+      FROM invoices WHERE kind=?`).get(kind);
+    const inv = sums('ACCREC');
+    const bills = sums('ACCPAY');
     return {
       banks, invoices: inv, bills,
       cash: reports.cashSummary(db, { months: 6 }),
@@ -311,6 +314,64 @@ const METHODS = {
   'reports.cashSummary': (db, a) => reports.cashSummary(db, a),
 
   'dashboard.data': dashboard.data,
+
+  'credits.allocate': (db, a) => docs.allocateCredit(db, a),
+  'credits.removeAllocation': (db, a) => docs.removeAllocation(db, a.id),
+
+  'pos.list': (db, a) => purchasing.listPOs(db, a),
+  'pos.get': (db, a) => purchasing.getPO(db, a.id),
+  'pos.save': (db, a) => purchasing.savePO(db, a),
+  'pos.setStatus': (db, a) => purchasing.setPOStatus(db, a.id, a.status),
+  'pos.toBill': (db, a) => purchasing.poToBill(db, a.id),
+  'pos.delete': (db, a) => purchasing.deletePO(db, a.id),
+
+  'repeating.list': (db) => purchasing.listRepeating(db),
+  'repeating.get': (db, a) => purchasing.getRepeating(db, a.id),
+  'repeating.save': (db, a) => purchasing.saveRepeating(db, a),
+  'repeating.setStatus': (db, a) => purchasing.setRepeatingStatus(db, a.id, a.status),
+  'repeating.delete': (db, a) => purchasing.deleteRepeating(db, a.id),
+  'repeating.generateDue': (db, a) => purchasing.generateDueRepeating(db, a && a.asOf),
+
+  'claims.list': (db, a) => expenses.listClaims(db, a),
+  'claims.get': (db, a) => expenses.getClaim(db, a.id),
+  'claims.save': (db, a) => expenses.saveClaim(db, a),
+  'claims.setStatus': (db, a) => expenses.setClaimStatus(db, a.id, a.status),
+  'claims.approve': (db, a) => expenses.approveClaim(db, a.id),
+  'claims.pay': (db, a) => expenses.payClaim(db, a),
+  'claims.delete': (db, a) => expenses.deleteClaim(db, a.id),
+  'claims.void': (db, a) => expenses.voidClaim(db, a.id),
+
+  'assets.list': (db, a) => assets.listAssets(db, a),
+  'assets.get': (db, a) => assets.getAsset(db, a.id),
+  'assets.save': (db, a) => assets.saveAsset(db, a),
+  'assets.register': (db, a) => assets.registerAsset(db, a.id),
+  'assets.delete': (db, a) => assets.deleteAsset(db, a.id),
+  'assets.runDepreciation': (db, a) => assets.runDepreciation(db, a),
+  'assets.dispose': (db, a) => assets.disposeAsset(db, a),
+
+  'projects.list': (db, a) => projects.listProjects(db, a),
+  'projects.get': (db, a) => projects.getProject(db, a.id),
+  'projects.save': (db, a) => projects.saveProject(db, a),
+  'projects.saveTime': (db, a) => projects.saveTimeEntry(db, a),
+  'projects.deleteTime': (db, a) => projects.deleteTimeEntry(db, a.id),
+  'projects.invoiceTime': (db, a) => projects.invoiceUnbilledTime(db, a),
+
+  'payroll.employees': (db, a) => payroll.listEmployees(db, a),
+  'payroll.saveEmployee': (db, a) => payroll.saveEmployee(db, a),
+  'payroll.archiveEmployee': (db, a) => payroll.archiveEmployee(db, a.id),
+  'payroll.createRun': (db, a) => payroll.createPayRun(db, a),
+  'payroll.getRun': (db, a) => payroll.getPayRun(db, a.id),
+  'payroll.listRuns': (db) => payroll.listPayRuns(db),
+  'payroll.updatePayslip': (db, a) => payroll.updatePayslip(db, a),
+  'payroll.postRun': (db, a) => payroll.postPayRun(db, a.id),
+  'payroll.payWages': (db, a) => payroll.payWages(db, a),
+  'payroll.deleteRun': (db, a) => payroll.deletePayRun(db, a.id),
+
+  'reports.bas': (db, a) => reports.basSummary(db, a),
+  'reports.cashFlowForecast': (db, a) => reports.cashFlowForecast(db, a || {}),
+  'reports.budgetVsActual': (db, a) => reports.budgetVsActual(db, a),
+  'budgets.get': (db, a) => reports.getBudgets(db, a),
+  'budgets.set': (db, a) => reports.setBudgets(db, a),
 };
 
 function call(db, method, args) {

@@ -41,6 +41,12 @@ function createWindow() {
 app.whenReady().then(() => {
   db = dbm.open(dbPath());
 
+  // Generate any repeating invoices that have fallen due since last launch.
+  try {
+    const r = api.call(db, 'repeating.generateDue', {});
+    if (r.created) console.log(`Generated ${r.created} repeating document(s)`);
+  } catch (e) { console.error('Repeating invoice generation failed:', e.message); }
+
   ipcMain.handle('api', (_e, method, args) => {
     try {
       return { ok: true, data: api.call(db, method, args) };
@@ -110,8 +116,31 @@ async function runSmokeTour(outDir) {
   const contacts = api.call(db, 'contacts.list', {});
   const quotes = api.call(db, 'quotes.list', {});
 
+  const claims = api.call(db, 'claims.list', {});
+  const projectsList = api.call(db, 'projects.list', {});
+  const payRuns = api.call(db, 'payroll.listRuns');
+  const poList = api.call(db, 'pos.list', {});
+  const creditNotes = api.call(db, 'invoices.list', { kind: 'ACCRECCREDIT' });
+
   const routes = [
     ['dashboard', '#/dashboard'],
+    ['credit-notes', '#/credit-notes'],
+    ['credit-note-view', `#/credit-notes/${creditNotes[0].id}`],
+    ['purchase-orders', '#/purchase-orders'],
+    ['purchase-order-view', `#/purchase-orders/${poList[0].id}`],
+    ['repeating', '#/repeating'],
+    ['expense-claims', '#/expense-claims'],
+    ['expense-claim-view', `#/expense-claims/${claims[0].id}`],
+    ['assets', '#/assets'],
+    ['projects', '#/projects'],
+    ['project-view', `#/projects/${projectsList[0].id}`],
+    ['payroll', '#/payroll'],
+    ['payroll-employees', '#/payroll?tab=employees'],
+    ['pay-run-view', `#/payroll/runs/${payRuns[0].id}`],
+    ['budgets', '#/budgets'],
+    ['report-bas', '#/reports/bas'],
+    ['report-cash-flow', '#/reports/cash-flow'],
+    ['report-budget', '#/reports/budget-variance'],
     ['invoices', '#/invoices'],
     ['invoice-view', `#/invoices/${invoices[0].id}`],
     ['invoice-new', '#/invoices/new'],

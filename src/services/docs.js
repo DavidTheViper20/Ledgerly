@@ -1,12 +1,24 @@
 'use strict';
 
-// Invoices (ACCREC), Bills (ACCPAY), Quotes and Payments.
+// Invoices (ACCREC), Bills (ACCPAY), Credit notes (ACCRECCREDIT/ACCPAYCREDIT),
+// Quotes and Payments. Foreign-currency documents store amounts in the document
+// currency; ledger postings convert to the base currency at the document rate,
+// with realised FX differences posted on settlement.
 
-const { calcLine, sumLines } = require('../money');
+const { round, calcLine, sumLines } = require('../money');
 const { getSetting, setSetting, systemAccount } = require('../db');
 const { postJournal, voidJournal } = require('./ledger');
 
 const EDITABLE = new Set(['DRAFT', 'SUBMITTED']);
+const RECEIVABLE = new Set(['ACCREC', 'ACCRECCREDIT']);
+const CREDIT = new Set(['ACCRECCREDIT', 'ACCPAYCREDIT']);
+
+// True when approving this kind debits the control account (AR/AP).
+function debitsControl(kind) {
+  return kind === 'ACCREC' || kind === 'ACCPAYCREDIT';
+}
+
+function toBase(cents, rate) { return round(cents * (rate || 1)); }
 
 function taxRate(db, id) {
   if (!id) return 0;
@@ -47,34 +59,42 @@ function saveInvoice(db, data) {
     if (!l.accountId) throw new Error('Every line needs an account');
   }
   const totals = sumLines(lines);
+  const baseCur = getSetting(db, 'base_currency') || 'AUD';
+  let currency = (data.currency || baseCur).toUpperCase();
+  if (currency === baseCur) currency = '';
+  const rate = currency ? (Number(data.exchangeRate) || 0) : 1;
+  if (currency && rate <= 0) throw new Error('Foreign currency documents need a positive exchange rate');
   let id = data.id;
   if (id) {
     const existing = getInvoice(db, id);
     if (!EDITABLE.has(existing.status)) throw new Error(`Cannot edit a ${existing.status} document`);
     db.prepare(`UPDATE invoices SET contact_id=?, issue_date=?, due_date=?, reference=?, number=?,
-      tax_mode=?, subtotal_cents=?, tax_cents=?, total_cents=?, updated_at=datetime('now') WHERE id=?`)
+      tax_mode=?, subtotal_cents=?, tax_cents=?, total_cents=?, currency=?, exchange_rate=?,
+      updated_at=datetime('now') WHERE id=?`)
       .run(data.contactId, data.issueDate, data.dueDate, data.reference || '', data.number || existing.number,
-        data.taxMode, totals.subtotalCents, totals.taxCents, totals.totalCents, id);
+        data.taxMode, totals.subtotalCents, totals.taxCents, totals.totalCents, currency, rate, id);
     db.prepare('DELETE FROM invoice_lines WHERE invoice_id = ?').run(id);
   } else {
-    const number = data.kind === 'ACCREC'
-      ? (data.number || nextNumber(db, 'invoice_prefix', 'invoice_next_number'))
-      : (data.number || '');
+    let number = data.number || '';
+    if (!number) {
+      if (data.kind === 'ACCREC') number = nextNumber(db, 'invoice_prefix', 'invoice_next_number');
+      else if (data.kind === 'ACCRECCREDIT') number = nextNumber(db, 'credit_prefix', 'credit_next_number');
+    }
     const r = db.prepare(`INSERT INTO invoices (kind, number, reference, contact_id, issue_date, due_date,
-      status, tax_mode, subtotal_cents, tax_cents, total_cents)
-      VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)`)
+      status, tax_mode, subtotal_cents, tax_cents, total_cents, currency, exchange_rate)
+      VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?)`)
       .run(data.kind, number, data.reference || '', data.contactId, data.issueDate, data.dueDate,
-        data.taxMode, totals.subtotalCents, totals.taxCents, totals.totalCents);
+        data.taxMode, totals.subtotalCents, totals.taxCents, totals.totalCents, currency, rate);
     id = Number(r.lastInsertRowid);
   }
   const ins = db.prepare(`INSERT INTO invoice_lines (invoice_id, item_id, description, qty, unit_price_cents,
-    discount_pct, account_id, tax_rate_id, net_cents, tax_cents, position) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    discount_pct, account_id, tax_rate_id, net_cents, tax_cents, position, project_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
   for (const l of lines) {
     ins.run(id, l.itemId || null, l.description || '', Number(l.qty) || 0, Math.round(Number(l.unitPriceCents) || 0),
-      Number(l.discountPct) || 0, l.accountId, l.taxRateId || null, l.netCents, l.taxCents, l.position);
+      Number(l.discountPct) || 0, l.accountId, l.taxRateId || null, l.netCents, l.taxCents, l.position, l.projectId || null);
   }
   // Mark contact as customer/supplier
-  db.prepare(`UPDATE contacts SET ${data.kind === 'ACCREC' ? 'is_customer' : 'is_supplier'} = 1 WHERE id = ?`)
+  db.prepare(`UPDATE contacts SET ${RECEIVABLE.has(data.kind) ? 'is_customer' : 'is_supplier'} = 1 WHERE id = ?`)
     .run(data.contactId);
   return getInvoice(db, id);
 }
@@ -90,6 +110,13 @@ function getInvoice(db, id) {
     WHERE il.invoice_id = ? ORDER BY il.position`).all(id);
   inv.payments = db.prepare(`SELECT p.*, a.name AS bank_name FROM payments p
     JOIN accounts a ON a.id = p.bank_account_id WHERE p.invoice_id = ? ORDER BY p.date`).all(id);
+  // Credit allocations involving this document (as credit or as invoice).
+  inv.allocations = db.prepare(`SELECT ca.*, ci.number AS credit_number, ii.number AS invoice_number,
+      ii.reference AS invoice_reference
+    FROM credit_allocations ca
+    JOIN invoices ci ON ci.id = ca.credit_id
+    JOIN invoices ii ON ii.id = ca.invoice_id
+    WHERE ca.credit_id = ? OR ca.invoice_id = ? ORDER BY ca.date`).all(id, id);
   return inv;
 }
 
@@ -113,46 +140,57 @@ function listInvoices(db, { kind, status = null, contactId = null, search = null
   return db.prepare(sql).all(...params);
 }
 
+const KIND_LABELS = {
+  ACCREC: 'Invoice', ACCPAY: 'Bill', ACCRECCREDIT: 'Credit note', ACCPAYCREDIT: 'Supplier credit',
+};
+
 function approveInvoice(db, id) {
   const inv = getInvoice(db, id);
   if (!EDITABLE.has(inv.status)) throw new Error(`Cannot approve a ${inv.status} document`);
   if (inv.total_cents <= 0) throw new Error('Document total must be greater than zero to approve');
-  const isRec = inv.kind === 'ACCREC';
+  const isRec = RECEIVABLE.has(inv.kind);
+  const drControl = debitsControl(inv.kind);
   const control = systemAccount(db, isRec ? 'AR' : 'AP');
   const taxAcc = systemAccount(db, 'TAX');
+  const rate = inv.exchange_rate || 1;
+  const label = KIND_LABELS[inv.kind] || 'Document';
 
+  // Convert each component to base currency; the control line is the sum of
+  // the converted components so the journal always balances exactly.
   const lines = [];
-  // Control account for the full total
-  lines.push({
-    accountId: control.id, contactId: inv.contact_id,
-    description: `${isRec ? 'Invoice' : 'Bill'} ${inv.number || inv.reference || '#' + id} - ${inv.contact_name}`,
-    [isRec ? 'debitCents' : 'creditCents']: inv.total_cents,
-  });
+  let controlBase = 0;
   for (const l of inv.lines) {
     if (l.net_cents !== 0) {
-      // Revenue lines on an invoice are credits; negative lines (credit notes
-      // within a document) flip side. Bills mirror this.
-      const credit = isRec ? l.net_cents > 0 : l.net_cents < 0;
+      const base = toBase(l.net_cents, rate);
+      controlBase += base;
+      const credit = drControl ? base > 0 : base < 0;
       lines.push({
         accountId: l.account_id, contactId: inv.contact_id, description: l.description,
-        [credit ? 'creditCents' : 'debitCents']: Math.abs(l.net_cents),
+        [credit ? 'creditCents' : 'debitCents']: Math.abs(base),
       });
     }
   }
   if (inv.tax_cents !== 0) {
-    const credit = isRec ? inv.tax_cents > 0 : inv.tax_cents < 0;
+    const base = toBase(inv.tax_cents, rate);
+    controlBase += base;
+    const credit = drControl ? base > 0 : base < 0;
     lines.push({
-      accountId: taxAcc.id, contactId: inv.contact_id, description: 'Tax',
-      [credit ? 'creditCents' : 'debitCents']: Math.abs(inv.tax_cents),
+      accountId: taxAcc.id, contactId: inv.contact_id, description: 'GST',
+      [credit ? 'creditCents' : 'debitCents']: Math.abs(base),
     });
   }
+  lines.unshift({
+    accountId: control.id, contactId: inv.contact_id,
+    description: `${label} ${inv.number || inv.reference || '#' + id} - ${inv.contact_name}`,
+    [drControl ? 'debitCents' : 'creditCents']: controlBase,
+  });
   const journalId = postJournal(db, {
     date: inv.issue_date,
-    narration: `${isRec ? 'Invoice' : 'Bill'} ${inv.number || inv.reference || '#' + id}`,
+    narration: `${label} ${inv.number || inv.reference || '#' + id}`,
     sourceKind: 'invoice', sourceId: id, lines,
   });
-  db.prepare("UPDATE invoices SET status='AUTHORISED', journal_id=?, updated_at=datetime('now') WHERE id=?")
-    .run(journalId, id);
+  db.prepare(`UPDATE invoices SET status='AUTHORISED', journal_id=?, base_total_cents=?,
+    updated_at=datetime('now') WHERE id=?`).run(journalId, controlBase, id);
   return getInvoice(db, id);
 }
 
@@ -167,6 +205,7 @@ function voidInvoice(db, id) {
   const inv = getInvoice(db, id);
   if (inv.status === 'VOIDED') return inv;
   if (inv.payments.length > 0) throw new Error('Remove payments before voiding');
+  if (inv.allocations.length > 0) throw new Error('Remove credit allocations before voiding');
   voidJournal(db, inv.journal_id);
   db.prepare("UPDATE invoices SET status='VOIDED', updated_at=datetime('now') WHERE id=?").run(id);
   return getInvoice(db, id);
@@ -198,33 +237,86 @@ function copyInvoice(db, id) {
 
 // ---------- payments ----------
 
-function addPayment(db, { invoiceId, bankAccountId, date, amountCents, reference = '' }) {
+// Settles part of an approved document. For invoices/bills this is a payment;
+// for credit notes it is a cash refund (sides reversed).
+// For foreign-currency documents amountCents is in the document currency and
+// exchangeRate is the rate at payment date; realised FX goes to the FX account.
+function addPayment(db, { invoiceId, bankAccountId, date, amountCents, reference = '', exchangeRate = null }) {
   const inv = getInvoice(db, invoiceId);
   if (inv.status !== 'AUTHORISED' && inv.status !== 'PAID') throw new Error('Document must be approved before payment');
   amountCents = Math.round(amountCents);
   if (amountCents <= 0) throw new Error('Payment must be positive');
   const due = inv.total_cents - inv.paid_cents;
   if (amountCents > due) throw new Error('Payment exceeds amount due');
-  const isRec = inv.kind === 'ACCREC';
+
+  const isRec = RECEIVABLE.has(inv.kind);
+  const isCredit = CREDIT.has(inv.kind);
   const control = systemAccount(db, isRec ? 'AR' : 'AP');
+  const docRate = inv.exchange_rate || 1;
+  const payRate = inv.currency ? (Number(exchangeRate) || docRate) : 1;
+  if (payRate <= 0) throw new Error('Exchange rate must be positive');
+
+  // Base amounts: what hits the bank vs what relieves the control account.
+  const bankBase = toBase(amountCents, payRate);
+  const baseTotal = inv.base_total_cents != null ? inv.base_total_cents : inv.total_cents;
+  const relievedSoFar = db.prepare(
+    'SELECT COALESCE(SUM(ar_relief_base_cents),0) AS s FROM payments WHERE invoice_id = ?').get(invoiceId).s
+    + allocationReliefBase(db, inv);
+  const isFinal = amountCents === due;
+  const reliefBase = isFinal ? baseTotal - relievedSoFar : toBase(amountCents, docRate);
+  const fx = bankBase - reliefBase; // for receivable money-in: + = gain
+
+  // Money direction: invoices receive into bank, credit notes refund out (and
+  // vice versa on the payable side).
+  const moneyIn = isRec ? !isCredit : isCredit;
+  const desc = isCredit ? 'Refund' : (isRec ? 'Payment received' : 'Payment made');
+  const lines = [
+    { accountId: bankAccountId, contactId: inv.contact_id, description: desc,
+      [moneyIn ? 'debitCents' : 'creditCents']: bankBase },
+    { accountId: control.id, contactId: inv.contact_id, description: desc,
+      [moneyIn ? 'creditCents' : 'debitCents']: reliefBase },
+  ];
+  if (fx !== 0) {
+    const fxAcc = systemAccount(db, 'FX');
+    // Balance the journal: whatever difference remains goes to FX.
+    const drTotal = lines.reduce((s, l) => s + (l.debitCents || 0), 0);
+    const crTotal = lines.reduce((s, l) => s + (l.creditCents || 0), 0);
+    const diff = drTotal - crTotal;
+    lines.push({ accountId: fxAcc.id, description: 'Realised currency ' + (diff < 0 ? 'gain' : 'loss'),
+      [diff < 0 ? 'debitCents' : 'creditCents']: Math.abs(diff) });
+  }
   const journalId = postJournal(db, {
-    date, narration: `Payment: ${inv.number || inv.reference || '#' + invoiceId}`,
-    sourceKind: 'payment', sourceId: null,
-    lines: isRec ? [
-      { accountId: bankAccountId, contactId: inv.contact_id, description: 'Payment received', debitCents: amountCents },
-      { accountId: control.id, contactId: inv.contact_id, description: 'Payment received', creditCents: amountCents },
-    ] : [
-      { accountId: control.id, contactId: inv.contact_id, description: 'Payment made', debitCents: amountCents },
-      { accountId: bankAccountId, contactId: inv.contact_id, description: 'Payment made', creditCents: amountCents },
-    ],
+    date, narration: `${isCredit ? 'Refund' : 'Payment'}: ${inv.number || inv.reference || '#' + invoiceId}`,
+    sourceKind: 'payment', sourceId: null, lines,
   });
-  const r = db.prepare(`INSERT INTO payments (invoice_id, bank_account_id, date, amount_cents, reference, journal_id)
-    VALUES (?,?,?,?,?,?)`).run(invoiceId, bankAccountId, date, amountCents, reference, journalId);
+  const r = db.prepare(`INSERT INTO payments (invoice_id, bank_account_id, date, amount_cents, reference,
+    journal_id, exchange_rate, base_amount_cents, ar_relief_base_cents) VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(invoiceId, bankAccountId, date, amountCents, reference, journalId, payRate, bankBase, reliefBase);
   db.prepare('UPDATE journals SET source_id = ? WHERE id = ?').run(Number(r.lastInsertRowid), journalId);
-  const paid = inv.paid_cents + amountCents;
-  db.prepare(`UPDATE invoices SET paid_cents=?, status=?, updated_at=datetime('now') WHERE id=?`)
-    .run(paid, paid >= inv.total_cents ? 'PAID' : 'AUTHORISED', invoiceId);
+  settleStatus(db, invoiceId);
   return getInvoice(db, invoiceId);
+}
+
+// Sum of base-currency control relief already recorded through allocations.
+function allocationReliefBase(db, inv) {
+  const rate = inv.exchange_rate || 1;
+  const rows = db.prepare(
+    'SELECT COALESCE(SUM(amount_cents),0) AS s FROM credit_allocations WHERE credit_id = ? OR invoice_id = ?')
+    .get(inv.id, inv.id);
+  return toBase(rows.s, rate);
+}
+
+// Recompute paid_cents (payments + allocations) and status for a document.
+function settleStatus(db, invoiceId) {
+  const inv = db.prepare('SELECT * FROM invoices WHERE id = ?').get(invoiceId);
+  const paid = db.prepare('SELECT COALESCE(SUM(amount_cents),0) AS s FROM payments WHERE invoice_id=?').get(invoiceId).s;
+  const alloc = db.prepare(
+    'SELECT COALESCE(SUM(amount_cents),0) AS s FROM credit_allocations WHERE credit_id = ? OR invoice_id = ?')
+    .get(invoiceId, invoiceId).s;
+  const settled = paid + alloc;
+  const status = inv.status === 'VOIDED' ? 'VOIDED' : (settled >= inv.total_cents ? 'PAID' : 'AUTHORISED');
+  db.prepare(`UPDATE invoices SET paid_cents=?, status=?, updated_at=datetime('now') WHERE id=?`)
+    .run(settled, status, invoiceId);
 }
 
 function removePayment(db, paymentId) {
@@ -233,11 +325,68 @@ function removePayment(db, paymentId) {
   if (p.is_reconciled) throw new Error('Unreconcile the bank statement line first');
   voidJournal(db, p.journal_id);
   db.prepare('DELETE FROM payments WHERE id = ?').run(paymentId);
-  const inv = getInvoice(db, p.invoice_id);
-  const paid = inv.payments.reduce((s, x) => s + x.amount_cents, 0);
-  db.prepare(`UPDATE invoices SET paid_cents=?, status=?, updated_at=datetime('now') WHERE id=?`)
-    .run(paid, paid >= inv.total_cents ? 'PAID' : 'AUTHORISED', p.invoice_id);
+  settleStatus(db, p.invoice_id);
   return getInvoice(db, p.invoice_id);
+}
+
+// ---------- credit note allocation ----------
+
+function allocateCredit(db, { creditId, invoiceId, amountCents, date }) {
+  const credit = getInvoice(db, creditId);
+  const inv = getInvoice(db, invoiceId);
+  if (!CREDIT.has(credit.kind)) throw new Error('Not a credit note');
+  const target = credit.kind === 'ACCRECCREDIT' ? 'ACCREC' : 'ACCPAY';
+  if (inv.kind !== target) throw new Error(`This credit can only be applied to a ${KIND_LABELS[target].toLowerCase()}`);
+  if (credit.contact_id !== inv.contact_id) throw new Error('Credit and document must be for the same contact');
+  if ((credit.currency || '') !== (inv.currency || '')) throw new Error('Credit and document must be in the same currency');
+  for (const d of [credit, inv]) {
+    if (d.status !== 'AUTHORISED') throw new Error(`${KIND_LABELS[d.kind]} must be awaiting payment to allocate`);
+  }
+  amountCents = Math.round(amountCents);
+  const creditRemaining = credit.total_cents - credit.paid_cents;
+  const invRemaining = inv.total_cents - inv.paid_cents;
+  if (amountCents <= 0) throw new Error('Allocation must be positive');
+  if (amountCents > creditRemaining) throw new Error('Allocation exceeds credit remaining');
+  if (amountCents > invRemaining) throw new Error('Allocation exceeds amount due on the document');
+
+  db.prepare('INSERT INTO credit_allocations (credit_id, invoice_id, date, amount_cents) VALUES (?,?,?,?)')
+    .run(creditId, invoiceId, date, amountCents);
+
+  // Same-currency, same-rate allocations net out inside AR/AP with no journal.
+  // If document rates differ, post the realised FX difference.
+  const invRelief = toBase(amountCents, inv.exchange_rate || 1);
+  const credRelief = toBase(amountCents, credit.exchange_rate || 1);
+  if (invRelief !== credRelief) {
+    const isRec = RECEIVABLE.has(credit.kind);
+    const control = systemAccount(db, isRec ? 'AR' : 'AP');
+    const fxAcc = systemAccount(db, 'FX');
+    const diff = invRelief - credRelief;
+    // Receivable: invoice relief credits AR, credit relief debits AR, so the
+    // net AR movement is CR when diff>0. Payable mirrors this (DR when diff>0).
+    const controlCredits = isRec ? diff > 0 : diff < 0;
+    postJournal(db, {
+      date, narration: `Credit allocation FX: ${credit.number} -> ${inv.number || inv.reference}`,
+      sourceKind: 'payment', sourceId: null,
+      lines: [
+        { accountId: control.id, contactId: inv.contact_id, description: 'Credit allocation',
+          [controlCredits ? 'creditCents' : 'debitCents']: Math.abs(diff) },
+        { accountId: fxAcc.id, description: 'Realised currency ' + (controlCredits ? 'loss' : 'gain'),
+          [controlCredits ? 'debitCents' : 'creditCents']: Math.abs(diff) },
+      ],
+    });
+  }
+  settleStatus(db, creditId);
+  settleStatus(db, invoiceId);
+  return getInvoice(db, creditId);
+}
+
+function removeAllocation(db, allocationId) {
+  const a = db.prepare('SELECT * FROM credit_allocations WHERE id = ?').get(allocationId);
+  if (!a) throw new Error('Allocation not found');
+  db.prepare('DELETE FROM credit_allocations WHERE id = ?').run(allocationId);
+  settleStatus(db, a.credit_id);
+  settleStatus(db, a.invoice_id);
+  return { ok: true };
 }
 
 // ---------- quotes ----------
@@ -329,6 +478,7 @@ function deleteQuote(db, id) {
 
 module.exports = {
   saveInvoice, getInvoice, listInvoices, approveInvoice, submitInvoice, voidInvoice,
-  deleteDraftInvoice, copyInvoice, addPayment, removePayment,
+  deleteDraftInvoice, copyInvoice, addPayment, removePayment, allocateCredit, removeAllocation,
+  settleStatus, KIND_LABELS,
   saveQuote, getQuote, listQuotes, setQuoteStatus, quoteToInvoice, deleteQuote,
 };

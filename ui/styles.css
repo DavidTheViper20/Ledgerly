@@ -153,6 +153,10 @@ table.lines .rm { color: var(--red); cursor: pointer; font-size: 15px; padding: 
 .badge.POSTED { background: #dcfce7; color: #15803d; }
 .badge.MATCHED { background: #dcfce7; color: #15803d; }
 .badge.UNMATCHED { background: #fef3c7; color: #92400e; }
+.badge.ACTIVE, .badge.APPROVED, .badge.REGISTERED { background: #dcfce7; color: #15803d; }
+.badge.PAUSED, .badge.CLOSED { background: #eceef4; color: #525b72; }
+.badge.BILLED { background: #ede9fe; color: #6d28d9; }
+.badge.CANCELLED, .badge.DISPOSED { background: #fee2e2; color: #b91c1c; }
 
 .amount-pos { color: var(--green); }
 .amount-neg { color: var(--red); }

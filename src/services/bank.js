@@ -68,10 +68,10 @@ function saveBankTransaction(db, data) {
       data.taxMode, totals.subtotalCents, totals.taxCents, totals.totalCents);
   const id = Number(r.lastInsertRowid);
   const ins = db.prepare(`INSERT INTO bank_transaction_lines (bank_transaction_id, description, qty,
-    unit_price_cents, account_id, tax_rate_id, net_cents, tax_cents, position) VALUES (?,?,?,?,?,?,?,?,?)`);
+    unit_price_cents, account_id, tax_rate_id, net_cents, tax_cents, position, project_id) VALUES (?,?,?,?,?,?,?,?,?,?)`);
   for (const l of lines) {
     ins.run(id, l.description || '', Number(l.qty) || 1, Math.round(Number(l.unitPriceCents) || 0),
-      l.accountId, l.taxRateId || null, l.netCents, l.taxCents, l.position);
+      l.accountId, l.taxRateId || null, l.netCents, l.taxCents, l.position, l.projectId || null);
   }
 
   const isSpend = data.kind === 'SPEND';
@@ -149,10 +149,18 @@ function listAccountTransactions(db, bankAccountId) {
   for (const p of db.prepare(`SELECT p.*, i.kind, i.number, c.name AS contact_name FROM payments p
       JOIN invoices i ON i.id = p.invoice_id JOIN contacts c ON c.id = i.contact_id
       WHERE p.bank_account_id = ?`).all(bankAccountId)) {
+    // Money direction: invoices receive, bills pay; credit notes are refunds
+    // in the opposite direction. Foreign payments use the base bank amount.
+    const moneyIn = p.kind === 'ACCREC' || p.kind === 'ACCPAYCREDIT';
+    const base = p.base_amount_cents != null ? p.base_amount_cents : p.amount_cents;
+    const labels = {
+      ACCREC: 'Payment from', ACCPAY: 'Payment to',
+      ACCRECCREDIT: 'Refund to', ACCPAYCREDIT: 'Refund from',
+    };
     out.push({
       kind: 'payment', id: p.id, date: p.date, reference: p.reference || p.number,
-      description: `${p.kind === 'ACCREC' ? 'Payment from' : 'Payment to'} ${p.contact_name}`,
-      amount_cents: p.kind === 'ACCREC' ? p.amount_cents : -p.amount_cents,
+      description: `${labels[p.kind] || 'Payment'} ${p.contact_name}`,
+      amount_cents: moneyIn ? base : -base,
       is_reconciled: p.is_reconciled,
     });
   }

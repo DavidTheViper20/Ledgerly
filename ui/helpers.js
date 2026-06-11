@@ -102,6 +102,8 @@ function badge(status) {
     DRAFT: 'Draft', SUBMITTED: 'Awaiting Approval', AUTHORISED: 'Awaiting Payment', PAID: 'Paid',
     VOIDED: 'Voided', SENT: 'Sent', ACCEPTED: 'Accepted', DECLINED: 'Declined', INVOICED: 'Invoiced',
     POSTED: 'Posted', MATCHED: 'Reconciled', UNMATCHED: 'Unreconciled', OVERDUE: 'Overdue',
+    ACTIVE: 'Active', PAUSED: 'Paused', CLOSED: 'Closed', BILLED: 'Billed', CANCELLED: 'Cancelled',
+    APPROVED: 'Approved', REGISTERED: 'Registered', DISPOSED: 'Disposed',
   };
   return `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 }

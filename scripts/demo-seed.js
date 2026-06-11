@@ -13,8 +13,8 @@ function seedDemo(db) {
 
   call('settings.update', {
     org_name: 'Demo Trading Co', org_email: 'accounts@demo.example',
-    org_address: '12 Harbour Street, Port City', org_tax_number: 'TX-998877',
-    base_currency: 'USD', setup_complete: '1',
+    org_address: '12 Collins Street, Melbourne VIC 3000', org_tax_number: '51 824 753 556',
+    base_currency: 'AUD', setup_complete: '1',
   });
 
   const acme = call('contacts.save', { name: 'Acme Industries', email: 'ap@acme.example', phone: '555-0101', is_customer: true });
@@ -24,8 +24,8 @@ function seedDemo(db) {
   const landlord = call('contacts.save', { name: 'Harbour Property Trust', is_supplier: true });
 
   const acc = (code) => db.prepare('SELECT * FROM accounts WHERE code=?').get(code);
-  const taxSales = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'Tax on Sales%'").get();
-  const taxPurch = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'Tax on Purchases%'").get();
+  const taxSales = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'GST on Income%'").get();
+  const taxPurch = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'GST on Expenses%'").get();
 
   const checking = call('bank.createAccount', { name: 'Business Checking', code: '090' });
   const savings = call('bank.createAccount', { name: 'Business Savings', code: '091' });
@@ -105,6 +105,79 @@ function seedDemo(db) {
     lines: [{ description: 'Interest income', qty: 1, unitPriceCents: 1250, accountId: acc('270').id }],
   });
   call('bank.transfer', { fromAccountId: checking.id, toAccountId: savings.id, date: daysAgo(6), amountCents: 100000, reference: 'Monthly sweep' });
+
+  // Credit note for Acme, partially allocated to the open Beta invoice? (must be same contact)
+  const cn = call('invoices.save', {
+    kind: 'ACCRECCREDIT', contactId: beta.id, issueDate: daysAgo(5), dueDate: daysAgo(5),
+    taxMode: 'exclusive',
+    lines: [{ description: 'Service credit — May outage', qty: 1, unitPriceCents: 20000, accountId: sales.id, taxRateId: taxSales.id }],
+  });
+  call('invoices.approve', { id: cn.id });
+  call('credits.allocate', { creditId: cn.id, invoiceId: inv2.id, amountCents: 15000, date: daysAgo(4) });
+
+  // Foreign currency invoice (USD)
+  const fx = call('invoices.save', {
+    kind: 'ACCREC', contactId: acme.id, issueDate: daysAgo(9), dueDate: daysAgo(-5),
+    taxMode: 'none', currency: 'USD', exchangeRate: 1.52,
+    lines: [{ description: 'US consulting engagement', qty: 10, unitPriceCents: 20000, accountId: sales.id }],
+  });
+  call('invoices.approve', { id: fx.id });
+
+  // Purchase order
+  const po = call('pos.save', {
+    contactId: office.id, issueDate: daysAgo(4), deliveryDate: daysAgo(-7), taxMode: 'exclusive',
+    deliveryAddress: '12 Collins Street, Melbourne VIC 3000',
+    lines: [{ description: 'Standing desks x2', qty: 2, unitPriceCents: 89000, accountId: acc('710').id, taxRateId: taxPurch.id }],
+  });
+  call('pos.setStatus', { id: po.id, status: 'APPROVED' });
+
+  // Repeating invoice template
+  call('repeating.save', {
+    kind: 'ACCREC', contactId: beta.id, reference: 'Support retainer', taxMode: 'exclusive',
+    scheduleEvery: 1, scheduleUnit: 'MONTH', nextDate: daysAgo(-12), dueDays: 14, autoApprove: 1,
+    lines: [{ description: 'Monthly support retainer', qty: 1, unitPriceCents: 60000, accountId: sales.id, taxRateId: taxSales.id }],
+  });
+
+  // Expense claim
+  const claim = call('claims.save', {
+    payee: 'David', date: daysAgo(6),
+    lines: [
+      { description: 'Client lunch', merchant: 'Lygon St Trattoria', grossCents: 8470, accountId: acc('420').id },
+      { description: 'Taxi to airport', merchant: '13CABS', grossCents: 6600, accountId: acc('493').id, taxRateId: taxPurch.id },
+    ],
+  });
+  call('claims.setStatus', { id: claim.id, status: 'SUBMITTED' });
+  call('claims.approve', { id: claim.id });
+
+  // Fixed asset with six months of depreciation
+  const asset = call('assets.save', {
+    name: 'MacBook Pro 16"', number: 'FA-0001', purchaseDate: daysAgo(200), costCents: 460000,
+    residualCents: 100000, lifeYears: 3,
+    assetAccountId: acc('720').id, accumAccountId: acc('721').id, expenseAccountId: acc('416').id,
+  });
+  call('assets.register', { id: asset.id });
+  call('assets.runDepreciation', { toPeriod: daysAgo(30).slice(0, 7) });
+
+  // Project with time and a cost
+  const project = call('projects.save', { name: 'Acme platform rebuild', contactId: acme.id, hourlyRateCents: 16500 });
+  call('projects.saveTime', { projectId: project.id, date: daysAgo(3), hours: 6, description: 'API integration' });
+  call('projects.saveTime', { projectId: project.id, date: daysAgo(2), hours: 4.5, description: 'Frontend work' });
+
+  // Payroll: two employees and a posted fortnightly run
+  call('payroll.saveEmployee', { name: 'Jess Chen', email: 'jess@demo.example', payBasis: 'SALARY', payRateCents: 9500000 });
+  call('payroll.saveEmployee', { name: 'Sam Patel', payBasis: 'HOURLY', payRateCents: 4200, hoursPerWeek: 24 });
+  const run = call('payroll.createRun', {
+    periodStart: daysAgo(18), periodEnd: daysAgo(5), paymentDate: daysAgo(4),
+  });
+  call('payroll.postRun', { id: run.id });
+
+  // Budget for the sales account, current FY months
+  const months = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(); d.setMonth(d.getMonth() - i);
+    months.push(d.toISOString().slice(0, 7));
+  }
+  call('budgets.set', { rows: months.map(m => ({ accountId: sales.id, month: m, amountCents: 800000 })) });
 
   // Statement lines to reconcile (one auto-matchable, one needing create)
   const csv = [

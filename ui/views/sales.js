@@ -2,9 +2,27 @@
 
 // Invoices (ACCREC) and Bills (ACCPAY) share list/editor/viewer; quotes below.
 
-function docKind() { return location.hash.startsWith('#/bills') ? 'ACCPAY' : 'ACCREC'; }
-function docBase(kind) { return kind === 'ACCPAY' ? 'bills' : 'invoices'; }
-function docLabel(kind) { return kind === 'ACCPAY' ? 'Bill' : 'Invoice'; }
+const DOC_ROUTES = {
+  ACCREC: 'invoices', ACCPAY: 'bills', ACCRECCREDIT: 'credit-notes', ACCPAYCREDIT: 'supplier-credits',
+};
+const DOC_LABELS = {
+  ACCREC: 'Invoice', ACCPAY: 'Bill', ACCRECCREDIT: 'Credit note', ACCPAYCREDIT: 'Supplier credit',
+};
+function docKind() {
+  const h = location.hash;
+  if (h.startsWith('#/bills')) return 'ACCPAY';
+  if (h.startsWith('#/credit-notes')) return 'ACCRECCREDIT';
+  if (h.startsWith('#/supplier-credits')) return 'ACCPAYCREDIT';
+  return 'ACCREC';
+}
+function docBase(kind) { return DOC_ROUTES[kind] || 'invoices'; }
+function docLabel(kind) { return DOC_LABELS[kind] || 'Invoice'; }
+function isCreditKind(kind) { return kind === 'ACCRECCREDIT' || kind === 'ACCPAYCREDIT'; }
+const CURRENCIES = ['AUD', 'USD', 'EUR', 'GBP', 'NZD', 'SGD', 'JPY', 'CNY', 'CAD'];
+function fmtDocMoney(cents, currency) {
+  if (!currency) return fmtMoney(cents);
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format((cents || 0) / 100);
+}
 
 // ---------- list ----------
 
@@ -20,9 +38,11 @@ VIEWS.invoices = async function (main, params) {
 
   main.innerHTML = `
     <div class="page-head">
-      <h1>${kind === 'ACCPAY' ? 'Bills to pay' : 'Invoices'}</h1>
+      <h1>${{ ACCREC: 'Invoices', ACCPAY: 'Bills to pay', ACCRECCREDIT: 'Credit notes', ACCPAYCREDIT: 'Supplier credits' }[kind]}</h1>
       <div class="spacer"></div>
       <input class="search" id="doc-search" placeholder="Search…" value="${esc(search)}" />
+      ${kind === 'ACCREC' ? '<a class="btn" href="#/credit-notes">Credit notes</a><a class="btn" href="#/repeating">Repeating</a>' : ''}
+      ${kind === 'ACCPAY' ? '<a class="btn" href="#/supplier-credits">Supplier credits</a><a class="btn" href="#/purchase-orders">Purchase orders</a>' : ''}
       <a class="btn primary" href="#/${base}/new">New ${docLabel(kind).toLowerCase()}</a>
     </div>
     <div class="tabs">
@@ -45,8 +65,8 @@ VIEWS.invoices = async function (main, params) {
               <td>${fmtDate(d.issue_date)}</td>
               <td>${fmtDate(d.due_date)}</td>
               <td>${badge(d.status === 'AUTHORISED' && d.due_date < today() ? 'OVERDUE' : d.status)}</td>
-              <td class="num">${fmtMoney(d.total_cents)}</td>
-              <td class="num">${d.status === 'AUTHORISED' || d.status === 'PAID' ? fmtMoney(d.total_cents - d.paid_cents) : ''}</td>
+              <td class="num">${fmtDocMoney(d.total_cents, d.currency)}${d.currency ? ' <span style="color:var(--ink-soft);font-size:11px">' + esc(d.currency) + '</span>' : ''}</td>
+              <td class="num">${d.status === 'AUTHORISED' || d.status === 'PAID' ? fmtDocMoney(d.total_cents - d.paid_cents, d.currency) : ''}</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -184,21 +204,25 @@ VIEWS.invoiceEdit = async function (main, params) {
     doc = {
       id: d.id, contactId: d.contact_id, issueDate: d.issue_date, dueDate: d.due_date,
       reference: d.reference, number: d.number, taxMode: d.tax_mode,
+      currency: d.currency, exchangeRate: d.exchange_rate,
       lines: d.lines.map(l => ({
         itemId: l.item_id, description: l.description, qty: l.qty, unitPriceCents: l.unit_price_cents,
-        discountPct: l.discount_pct, accountId: l.account_id, taxRateId: l.tax_rate_id,
+        discountPct: l.discount_pct, accountId: l.account_id, taxRateId: l.tax_rate_id, projectId: l.project_id,
       })),
     };
   } else {
     doc = {
       contactId: params.contact ? Number(params.contact) : null,
       issueDate: today(), dueDate: addDays(today(), dueDays),
-      reference: '', number: '', taxMode: 'exclusive', lines: [],
+      reference: '', number: '', taxMode: 'exclusive', currency: '', exchangeRate: 1, lines: [],
     };
   }
+  const baseCur = STATE.settings.base_currency || 'AUD';
 
   main.innerHTML = `
-    <div class="page-head"><h1>${isEdit ? 'Edit' : 'New'} ${docLabel(kind).toLowerCase()}</h1></div>
+    <div class="page-head"><h1>${isEdit ? 'Edit' : 'New'} ${docLabel(kind).toLowerCase()}</h1>
+      ${isCreditKind(kind) ? '<span class="page-sub" style="margin:0">Credits reduce what is owed — approve, then allocate to a document or refund.</span>' : ''}
+    </div>
     <form id="doc-form" class="card">
       <div class="field-row">
         <label class="field">${kind === 'ACCPAY' ? 'From (supplier) *' : 'To (customer) *'}
@@ -216,6 +240,14 @@ VIEWS.invoiceEdit = async function (main, params) {
             <option value="inclusive" ${doc.taxMode === 'inclusive' ? 'selected' : ''}>Tax inclusive</option>
             <option value="none" ${doc.taxMode === 'none' ? 'selected' : ''}>No tax</option>
           </select>
+        </label>
+        <label class="field">Currency
+          <select name="currency">
+            ${CURRENCIES.map(cur => `<option value="${cur}" ${(doc.currency || baseCur) === cur ? 'selected' : ''}>${cur}</option>`).join('')}
+          </select>
+        </label>
+        <label class="field" id="rate-field" ${doc.currency ? '' : 'hidden'}>Exchange rate (${esc(baseCur)} per 1 unit)
+          <input name="exchangeRate" value="${doc.exchangeRate || 1}" />
         </label>
       </div>
       <div id="lines-host"></div>
@@ -245,6 +277,9 @@ VIEWS.invoiceEdit = async function (main, params) {
   renderTotals();
   main.addEventListener('lines-changed', renderTotals);
   form.elements.taxMode.addEventListener('change', renderTotals);
+  form.elements.currency.addEventListener('change', () => {
+    document.getElementById('rate-field').hidden = form.elements.currency.value === baseCur;
+  });
   form.elements.issueDate.addEventListener('change', () => {
     if (!isEdit) form.elements.dueDate.value = addDays(form.elements.issueDate.value, dueDays);
   });
@@ -263,6 +298,8 @@ VIEWS.invoiceEdit = async function (main, params) {
       number: form.elements.number.value.trim() || undefined,
       reference: form.elements.reference.value.trim(),
       taxMode: form.elements.taxMode.value,
+      currency: form.elements.currency.value,
+      exchangeRate: parseFloat(form.elements.exchangeRate.value) || 1,
       lines: editor.read().filter(l => l.description || l.unitPriceCents || l.accountId),
     };
     if (!data.contactId) return toast('Choose a contact', 'error');
@@ -281,10 +318,12 @@ VIEWS.invoiceView = async function (main, params) {
   const d = await api('invoices.get', { id: Number(params.id) });
   const kind = d.kind;
   const base = docBase(kind);
-  const isRec = kind === 'ACCREC';
+  const isRec = kind === 'ACCREC' || kind === 'ACCRECCREDIT';
+  const isCredit = isCreditKind(kind);
   const due = d.total_cents - d.paid_cents;
   const s = STATE.settings;
-  const overdue = d.status === 'AUTHORISED' && d.due_date < today();
+  const overdue = !isCredit && d.status === 'AUTHORISED' && d.due_date < today();
+  const fm = (c) => fmtDocMoney(c, d.currency);
 
   main.innerHTML = `
     <div class="page-head no-print">
@@ -296,8 +335,10 @@ VIEWS.invoiceView = async function (main, params) {
         ${d.status === 'DRAFT' ? '<button class="btn" id="btn-submit">Submit for approval</button>' : ''}
         <button class="btn primary" id="btn-approve">Approve</button>
         <button class="btn danger" id="btn-delete">Delete</button>` : ''}
-      ${d.status === 'AUTHORISED' ? `<button class="btn primary" id="btn-pay">Record payment</button>` : ''}
-      ${(d.status === 'AUTHORISED' || d.status === 'PAID') && d.payments.length === 0 ? `<button class="btn danger" id="btn-void">Void</button>` : ''}
+      ${d.status === 'AUTHORISED' && isCredit ? `<button class="btn primary" id="btn-allocate">Allocate credit</button>` : ''}
+      ${d.status === 'AUTHORISED' ? `<button class="btn ${isCredit ? '' : 'primary'}" id="btn-pay">${isCredit ? 'Cash refund' : 'Record payment'}</button>` : ''}
+      ${!isCredit && (d.status === 'AUTHORISED' || d.status === 'PAID') ? `<a class="btn" href="#/${isRec ? 'credit-notes' : 'supplier-credits'}/new?contact=${d.contact_id}">Add credit note</a>` : ''}
+      ${(d.status === 'AUTHORISED' || d.status === 'PAID') && d.payments.length === 0 && d.allocations.length === 0 ? `<button class="btn danger" id="btn-void">Void</button>` : ''}
       <button class="btn" id="btn-copy">Copy</button>
       <button class="btn" id="btn-print">Print</button>
       <button class="btn" id="btn-pdf">Export PDF</button>
@@ -308,19 +349,20 @@ VIEWS.invoiceView = async function (main, params) {
         <div>
           <div style="font-size:19px;font-weight:750">${esc(s.org_name || 'Ledgerly')}</div>
           <div class="meta">${esc(s.org_address || '')}</div>
-          <div class="meta">${s.org_tax_number ? 'Tax no: ' + esc(s.org_tax_number) : ''}</div>
+          <div class="meta">${s.org_tax_number ? 'ABN: ' + esc(s.org_tax_number) : ''}</div>
           <div style="margin-top:16px" class="meta">
             ${isRec ? 'Bill to' : 'From'}: <b><a href="#/contacts/${d.contact_id}">${esc(d.contact_name)}</a></b>
           </div>
         </div>
         <div style="text-align:right">
-          <div style="font-size:17px;font-weight:700">${isRec ? 'TAX INVOICE' : 'BILL'}</div>
+          <div style="font-size:17px;font-weight:700">${{ ACCREC: 'TAX INVOICE', ACCPAY: 'BILL', ACCRECCREDIT: 'CREDIT NOTE', ACCPAYCREDIT: 'SUPPLIER CREDIT' }[kind]}</div>
+          ${d.currency ? `<div class="meta">Currency: <b>${esc(d.currency)}</b> @ ${d.exchange_rate} ${esc(s.base_currency || 'AUD')}</div>` : ''}
           <div class="meta">Number: <b>${esc(d.number || '—')}</b></div>
           ${d.reference ? `<div class="meta">Reference: <b>${esc(d.reference)}</b></div>` : ''}
           <div class="meta">Issue date: <b>${fmtDate(d.issue_date)}</b></div>
           <div class="meta">Due date: <b>${fmtDate(d.due_date)}</b></div>
-          <div class="doc-total" style="margin-top:10px">${fmtMoney(d.total_cents)}</div>
-          ${d.status === 'AUTHORISED' || d.status === 'PAID' ? `<div class="meta">Amount due: <b>${fmtMoney(due)}</b></div>` : ''}
+          <div class="doc-total" style="margin-top:10px">${fm(d.total_cents)}</div>
+          ${d.status === 'AUTHORISED' || d.status === 'PAID' ? `<div class="meta">${isCredit ? 'Remaining credit' : 'Amount due'}: <b>${fm(due)}</b></div>` : ''}
         </div>
       </div>
 
@@ -343,13 +385,32 @@ VIEWS.invoiceView = async function (main, params) {
         </tbody>
       </table>
       <div class="totals-box">
-        <div class="row"><span>Subtotal</span><b>${fmtMoney(d.subtotal_cents)}</b></div>
-        <div class="row"><span>${esc(s.tax_label || 'Tax')}</span><b>${fmtMoney(d.tax_cents)}</b></div>
-        <div class="row grand"><span>Total</span><span>${fmtMoney(d.total_cents)}</span></div>
-        ${d.payments.map(p => `<div class="row"><span>Less payment ${fmtDate(p.date)} (${esc(p.bank_name)})</span><b>−${fmtMoney(p.amount_cents)}</b></div>`).join('')}
-        ${d.payments.length ? `<div class="row grand"><span>Amount due</span><span>${fmtMoney(due)}</span></div>` : ''}
+        <div class="row"><span>Subtotal</span><b>${fm(d.subtotal_cents)}</b></div>
+        <div class="row"><span>${esc(s.tax_label || 'GST')}</span><b>${fm(d.tax_cents)}</b></div>
+        <div class="row grand"><span>Total</span><span>${fm(d.total_cents)}</span></div>
+        ${d.payments.map(p => `<div class="row"><span>${isCredit ? 'Refund' : 'Less payment'} ${fmtDate(p.date)} (${esc(p.bank_name)})</span><b>−${fm(p.amount_cents)}</b></div>`).join('')}
+        ${d.allocations.map(a2 => `<div class="row"><span>${a2.credit_id === d.id ? 'Allocated to ' + esc(a2.invoice_number || a2.invoice_reference || '#' + a2.invoice_id) : 'Credit ' + esc(a2.credit_number)} ${fmtDate(a2.date)}</span><b>−${fm(a2.amount_cents)}</b></div>`).join('')}
+        ${d.payments.length || d.allocations.length ? `<div class="row grand"><span>${isCredit ? 'Remaining credit' : 'Amount due'}</span><span>${fm(due)}</span></div>` : ''}
       </div>
     </div>
+
+    ${d.allocations.length ? `
+    <div class="card no-print">
+      <h2>Credit allocations</h2>
+      <table class="data">
+        <thead><tr><th>Date</th><th>Credit note</th><th>Applied to</th><th class="num">Amount</th><th></th></tr></thead>
+        <tbody>
+          ${d.allocations.map(a2 => `
+            <tr>
+              <td>${fmtDate(a2.date)}</td>
+              <td><a href="#/${isRec ? 'credit-notes' : 'supplier-credits'}/${a2.credit_id}">${esc(a2.credit_number)}</a></td>
+              <td><a href="#/${isRec ? 'invoices' : 'bills'}/${a2.invoice_id}">${esc(a2.invoice_number || a2.invoice_reference || '#' + a2.invoice_id)}</a></td>
+              <td class="num">${fm(a2.amount_cents)}</td>
+              <td><button class="btn small danger btn-rm-alloc" data-id="${a2.id}">Remove</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : ''}
 
     ${d.payments.length ? `
     <div class="card no-print">
@@ -400,23 +461,74 @@ VIEWS.invoiceView = async function (main, params) {
     if (!confirm('Remove this payment?')) return;
     try { await api('payments.remove', { id: Number(ev.target.dataset.id) }); toast('Payment removed', 'success'); refresh(); } catch (e) { showError(e); }
   });
+  on(main, '.btn-rm-alloc', 'click', async (ev) => {
+    if (!confirm('Remove this credit allocation?')) return;
+    try { await api('credits.removeAllocation', { id: Number(ev.target.dataset.id) }); toast('Allocation removed', 'success'); refresh(); } catch (e) { showError(e); }
+  });
+
+  document.getElementById('btn-allocate')?.addEventListener('click', async () => {
+    const open = await api('invoices.list', {
+      kind: isRec ? 'ACCREC' : 'ACCPAY', status: 'AUTHORISED', contactId: d.contact_id,
+    });
+    const candidates = open.filter(x => (x.currency || '') === (d.currency || ''));
+    if (!candidates.length) return toast('No open documents for this contact in the same currency', 'error');
+    const m = modal(`
+      <h2>Allocate credit ${esc(d.number)}</h2>
+      <p style="color:var(--ink-soft);font-size:12.5px">Remaining credit: <b>${fm(due)}</b></p>
+      <form id="alloc-form">
+        <label class="field">Apply to
+          <select name="invoice">
+            ${candidates.map(x => `<option value="${x.id}" data-due="${x.total_cents - x.paid_cents}">
+              ${esc(x.number || x.reference || '#' + x.id)} — due ${fmtDocMoney(x.total_cents - x.paid_cents, x.currency)}</option>`).join('')}
+          </select>
+        </label>
+        <div class="field-row">
+          <label class="field">Amount *<input name="amount" required value="${dollarsOf(Math.min(due, candidates[0].total_cents - candidates[0].paid_cents))}" /></label>
+          <label class="field">Date *<input type="date" name="date" required value="${today()}" /></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" type="submit">Allocate</button>
+          <button class="btn" type="button" id="alloc-cancel">Cancel</button>
+        </div>
+      </form>`);
+    m.querySelector('#alloc-cancel').addEventListener('click', closeModal);
+    m.querySelector('[name=invoice]').addEventListener('change', (ev2) => {
+      const opt = ev2.target.selectedOptions[0];
+      m.querySelector('[name=amount]').value = dollarsOf(Math.min(due, Number(opt.dataset.due)));
+    });
+    m.querySelector('#alloc-form').addEventListener('submit', async (ev2) => {
+      ev2.preventDefault();
+      try {
+        await api('credits.allocate', {
+          creditId: d.id, invoiceId: Number(ev2.target.elements.invoice.value),
+          amountCents: centsOf(ev2.target.elements.amount.value), date: ev2.target.elements.date.value,
+        });
+        closeModal();
+        toast('Credit allocated', 'success');
+        refresh();
+      } catch (e) { showError(e); }
+    });
+  });
 
   $('btn-pay')?.addEventListener('click', () => {
     const banks = STATE.accounts.filter(a => a.type === 'BANK');
     if (!banks.length) return toast('Create a bank account first (Accounting → Bank accounts)', 'error');
+    const moneyIn = isRec !== isCredit;
     const m = modal(`
-      <h2>Record a payment</h2>
+      <h2>${isCredit ? 'Cash refund' : 'Record a payment'}</h2>
       <form id="pay-form">
         <div class="field-row">
-          <label class="field">Amount *<input name="amount" required value="${dollarsOf(due)}" /></label>
+          <label class="field">Amount${d.currency ? ' (' + esc(d.currency) + ')' : ''} *<input name="amount" required value="${dollarsOf(due)}" /></label>
           <label class="field">Date *<input type="date" name="date" required value="${today()}" /></label>
         </div>
         <div class="field-row">
-          <label class="field">${isRec ? 'Paid into' : 'Paid from'} *
+          <label class="field">${moneyIn ? 'Paid into' : 'Paid from'} *
             <select name="bank">${banks.map(b => `<option value="${b.id}">${esc(b.code)} - ${esc(b.name)}</option>`).join('')}</select>
           </label>
           <label class="field">Reference<input name="reference" /></label>
         </div>
+        ${d.currency ? `<label class="field">Exchange rate at payment (${esc(s.base_currency || 'AUD')} per 1 ${esc(d.currency)})
+          <input name="rate" value="${d.exchange_rate}" /></label>` : ''}
         <div class="btn-row">
           <button class="btn primary" type="submit">Record payment</button>
           <button class="btn" type="button" id="pay-cancel">Cancel</button>
@@ -433,6 +545,7 @@ VIEWS.invoiceView = async function (main, params) {
           date: f.elements.date.value,
           amountCents: centsOf(f.elements.amount.value),
           reference: f.elements.reference.value.trim(),
+          exchangeRate: f.elements.rate ? parseFloat(f.elements.rate.value) || null : null,
         });
         closeModal();
         toast('Payment recorded', 'success');

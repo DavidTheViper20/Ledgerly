@@ -10,6 +10,34 @@ const ROUTES = [
   ['#/contacts/:id/edit', 'contactEdit'],
   ['#/contacts/:id', 'contactDetail'],
   ['#/contacts', 'contacts'],
+  ['#/credit-notes/new', 'invoiceEdit'],
+  ['#/credit-notes/:id/edit', 'invoiceEdit'],
+  ['#/credit-notes/:id', 'invoiceView'],
+  ['#/credit-notes', 'invoices'],
+  ['#/supplier-credits/new', 'invoiceEdit'],
+  ['#/supplier-credits/:id/edit', 'invoiceEdit'],
+  ['#/supplier-credits/:id', 'invoiceView'],
+  ['#/supplier-credits', 'invoices'],
+  ['#/purchase-orders/new', 'poEdit'],
+  ['#/purchase-orders/:id/edit', 'poEdit'],
+  ['#/purchase-orders/:id', 'poView'],
+  ['#/purchase-orders', 'pos'],
+  ['#/repeating/new', 'repeatingEdit'],
+  ['#/repeating/:id/edit', 'repeatingEdit'],
+  ['#/repeating', 'repeating'],
+  ['#/expense-claims/new', 'claimEdit'],
+  ['#/expense-claims/:id/edit', 'claimEdit'],
+  ['#/expense-claims/:id', 'claimView'],
+  ['#/expense-claims', 'claims'],
+  ['#/assets', 'assets'],
+  ['#/projects/:id', 'projectDetail'],
+  ['#/projects', 'projects'],
+  ['#/payroll/runs/:id', 'payRunView'],
+  ['#/payroll', 'payroll'],
+  ['#/budgets', 'budgetManager'],
+  ['#/reports/bas', 'reportBAS'],
+  ['#/reports/cash-flow', 'reportCashFlow'],
+  ['#/reports/budget-variance', 'reportBudget'],
   ['#/invoices/new', 'invoiceEdit'],
   ['#/invoices/:id/edit', 'invoiceEdit'],
   ['#/invoices/:id', 'invoiceView'],
@@ -74,8 +102,13 @@ function parseQuery() {
 function setActiveNav(hash) {
   const section =
     hash.startsWith('#/contacts') ? 'contacts' :
-    hash.startsWith('#/invoices') || hash.startsWith('#/quotes') || hash.startsWith('#/bills') || hash.startsWith('#/items') ? 'business' :
-    hash.startsWith('#/bank') || hash.startsWith('#/reports') || hash.startsWith('#/chart') || hash.startsWith('#/journals') ? 'accounting' :
+    hash.startsWith('#/invoices') || hash.startsWith('#/quotes') || hash.startsWith('#/bills') || hash.startsWith('#/items') ||
+    hash.startsWith('#/credit-notes') || hash.startsWith('#/supplier-credits') || hash.startsWith('#/purchase-orders') ||
+    hash.startsWith('#/repeating') || hash.startsWith('#/expense-claims') ? 'business' :
+    hash.startsWith('#/projects') ? 'projects' :
+    hash.startsWith('#/payroll') ? 'payroll' :
+    hash.startsWith('#/bank') || hash.startsWith('#/reports') || hash.startsWith('#/chart') || hash.startsWith('#/journals') ||
+    hash.startsWith('#/assets') || hash.startsWith('#/budgets') ? 'accounting' :
     'dashboard';
   document.querySelectorAll('#mainnav [data-nav]').forEach(el => {
     el.classList.toggle('active', el.dataset.nav === section);

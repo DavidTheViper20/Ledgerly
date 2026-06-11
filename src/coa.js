@@ -1,11 +1,12 @@
 'use strict';
 
-// Default tax rates. Editable in Settings.
+// Default tax rates for Australia (GST). Editable in Settings.
 const DEFAULT_TAX_RATES = [
-  { name: 'No Tax (0%)', rate: 0 },
-  { name: 'Tax on Sales (20%)', rate: 20 },
-  { name: 'Tax on Purchases (20%)', rate: 20 },
-  { name: 'Reduced Rate (5%)', rate: 5 },
+  { name: 'BAS Excluded (0%)', rate: 0 },
+  { name: 'GST on Income (10%)', rate: 10 },
+  { name: 'GST on Expenses (10%)', rate: 10 },
+  { name: 'GST Free Income (0%)', rate: 0 },
+  { name: 'GST Free Expenses (0%)', rate: 0 },
 ];
 
 // Account types and the class they roll up to.
@@ -50,6 +51,8 @@ const TYPE_LABELS = {
 const DEFAULT_ACCOUNTS = [
   { code: '200', name: 'Sales', type: 'REVENUE', tax: 'sales' },
   { code: '260', name: 'Other Revenue', type: 'OTHER_INCOME', tax: 'sales' },
+  { code: '261', name: 'Realised Currency Gains', type: 'OTHER_INCOME', tax: 'none', system: 'FX' },
+  { code: '263', name: 'Gain/Loss on Asset Disposal', type: 'OTHER_INCOME', tax: 'none', system: 'DISPOSAL' },
   { code: '270', name: 'Interest Income', type: 'OTHER_INCOME', tax: 'none' },
 
   { code: '310', name: 'Cost of Goods Sold', type: 'DIRECT_COSTS', tax: 'purchases' },
@@ -71,7 +74,8 @@ const DEFAULT_ACCOUNTS = [
   { code: '461', name: 'Printing & Stationery', type: 'EXPENSE', tax: 'purchases' },
   { code: '469', name: 'Rent', type: 'EXPENSE', tax: 'purchases' },
   { code: '473', name: 'Repairs and Maintenance', type: 'EXPENSE', tax: 'purchases' },
-  { code: '477', name: 'Salaries & Wages', type: 'EXPENSE', tax: 'none' },
+  { code: '477', name: 'Salaries & Wages', type: 'EXPENSE', tax: 'none', system: 'WAGES_EXP' },
+  { code: '478', name: 'Superannuation', type: 'EXPENSE', tax: 'none', system: 'SUPER_EXP' },
   { code: '485', name: 'Subscriptions', type: 'EXPENSE', tax: 'purchases' },
   { code: '489', name: 'Telephone & Internet', type: 'EXPENSE', tax: 'purchases' },
   { code: '493', name: 'Travel', type: 'EXPENSE', tax: 'purchases' },
@@ -87,8 +91,11 @@ const DEFAULT_ACCOUNTS = [
   { code: '721', name: 'Less Accumulated Depreciation on Computer Equipment', type: 'FIXED_ASSET', tax: 'none' },
 
   { code: '800', name: 'Accounts Payable', type: 'CURRENT_LIABILITY', tax: 'none', system: 'AP' },
-  { code: '820', name: 'Sales Tax', type: 'CURRENT_LIABILITY', tax: 'none', system: 'TAX' },
-  { code: '825', name: 'Payroll Tax Payable', type: 'CURRENT_LIABILITY', tax: 'none' },
+  { code: '804', name: 'Wages Payable', type: 'CURRENT_LIABILITY', tax: 'none', system: 'WAGES_PAY' },
+  { code: '820', name: 'GST', type: 'CURRENT_LIABILITY', tax: 'none', system: 'TAX' },
+  { code: '825', name: 'PAYG Withholding Payable', type: 'CURRENT_LIABILITY', tax: 'none', system: 'PAYG' },
+  { code: '826', name: 'Superannuation Payable', type: 'CURRENT_LIABILITY', tax: 'none', system: 'SUPER_PAY' },
+  { code: '827', name: 'Employee Reimbursements Payable', type: 'CURRENT_LIABILITY', tax: 'none', system: 'REIMB' },
   { code: '830', name: 'Income Tax Payable', type: 'CURRENT_LIABILITY', tax: 'none' },
   { code: '840', name: 'Historical Adjustment', type: 'CURRENT_LIABILITY', tax: 'none', system: 'HISTORICAL' },
   { code: '850', name: 'Suspense', type: 'CURRENT_LIABILITY', tax: 'none' },

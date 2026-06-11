@@ -17,7 +17,7 @@ function setupBasics() {
   const c = call('contacts.save', { name: 'Acme Ltd', email: 'acme@example.com' });
   const sales = db.prepare("SELECT * FROM accounts WHERE code='200'").get();
   const rent = db.prepare("SELECT * FROM accounts WHERE code='469'").get();
-  const taxSales = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'Tax on Sales%'").get();
+  const taxSales = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'GST on Income%'").get();
   const bankAcc = call('bank.createAccount', { name: 'Business Checking', code: '090' });
   return { c, sales, rent, taxSales, bankAcc };
 }
@@ -58,7 +58,7 @@ test('invoice: draft -> approve posts balanced journal', () => {
     lines: [{ description: 'Consulting', qty: 10, unitPriceCents: 15000, accountId: sales.id, taxRateId: taxSales.id }],
   });
   assert.equal(inv.status, 'DRAFT');
-  assert.equal(inv.total_cents, 180000); // 1500 + 20% tax
+  assert.equal(inv.total_cents, 165000); // 1500 + 10% GST
   assert.match(inv.number, /^INV-\d+/);
 
   const approved = call('invoices.approve', { id: inv.id });
@@ -67,11 +67,11 @@ test('invoice: draft -> approve posts balanced journal', () => {
   const dr = j.lines.reduce((s, l) => s + l.debit_cents, 0);
   const cr = j.lines.reduce((s, l) => s + l.credit_cents, 0);
   assert.equal(dr, cr);
-  assert.equal(dr, 180000);
+  assert.equal(dr, 165000);
   // AR debited
   const ar = db.prepare("SELECT id FROM accounts WHERE system_key='AR'").get();
   const arLine = j.lines.find(l => l.account_id === ar.id);
-  assert.equal(arLine.debit_cents, 180000);
+  assert.equal(arLine.debit_cents, 165000);
 });
 
 test('invoice: payment flow to PAID, overpayment rejected', () => {
@@ -153,9 +153,9 @@ test('bank: spend money posts and shows in P&L', () => {
     taxMode: 'exclusive',
     lines: [{ description: 'Rent', qty: 1, unitPriceCents: 100000, accountId: rent.id, taxRateId: taxSales.id }],
   });
-  assert.equal(t.total_cents, 120000);
+  assert.equal(t.total_cents, 110000);
   const banks = call('bank.accounts');
-  assert.equal(banks.find(b => b.id === bankAcc.id).balance_cents, -120000);
+  assert.equal(banks.find(b => b.id === bankAcc.id).balance_cents, -110000);
   const pl = call('reports.profitAndLoss', { from: '2026-03-01', to: '2026-03-31' });
   assert.equal(pl.totals.expenses_cents, 100000); // net of tax
 });
@@ -272,7 +272,7 @@ test('reports: balance sheet balances and trial balance equality', () => {
 
   const bs = call('reports.balanceSheet', { asAt: '2026-12-31' });
   assert.equal(bs.totals.check_cents, 0, 'assets = liabilities + equity');
-  assert.equal(bs.totals.assets_cents, 100000 - 40000 + 80000); // bank + AR remainder
+  assert.equal(bs.totals.assets_cents, 100000 - 40000 + 65000); // bank + AR remainder
 
   const tb = call('reports.trialBalance', { asAt: '2026-12-31' });
   assert.equal(tb.totals.debit_cents, tb.totals.credit_cents);
@@ -282,7 +282,7 @@ test('reports: balance sheet balances and trial balance equality', () => {
   assert.equal(pl.totals.net_profit_cents, 110000);
 
   const tax = call('reports.taxSummary', { from: '2026-01-01', to: '2026-12-31' });
-  assert.equal(tax.totals.collected_cents, 30000);
+  assert.equal(tax.totals.collected_cents, 15000);
 });
 
 test('reports: balance sheet splits prior vs current year earnings', () => {
