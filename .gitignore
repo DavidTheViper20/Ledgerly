@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.db
 *.log
+.DS_Store
+build/icon.iconset/
