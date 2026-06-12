@@ -45,7 +45,7 @@ function withTimeout(promise, ms, what) {
 const TOOLS = [
   {
     name: 'list_documents',
-    description: 'List invoices, bills or credit notes. kind: ACCREC (sales invoices), ACCPAY (bills), ACCRECCREDIT (credit notes), ACCPAYCREDIT (supplier credits). status optional: DRAFT, SUBMITTED, AUTHORISED (awaiting payment), OVERDUE, PAID, VOIDED. search matches number/reference/contact. Amounts are integer cents.',
+    description: 'List documents. kind: ACCREC=sales invoices, ACCPAY=bills, ACCRECCREDIT/ACCPAYCREDIT=credit notes. Optional status (DRAFT, SUBMITTED, AUTHORISED, OVERDUE, PAID, VOIDED) and search. Cents.',
     params: { kind: { type: 'string', required: true }, status: { type: 'string' }, search: { type: 'string' } },
     run: (db, a) => api.call(db, 'invoices.list', { kind: a.kind || 'ACCREC', status: a.status || null, search: a.search || null })
       .slice(0, 50).map(d => ({
@@ -148,7 +148,7 @@ const TOOLS = [
   },
   {
     name: 'web_search',
-    description: 'Search the live web. Use for legislation and law lookups, ATO / Fair Work rules, current rates and thresholds, or anything not stored in the ledger. Returns results with title, url and snippet. After searching, cite pages in your reply as markdown links, e.g. "I found it **[here](https://example.com/page)**".',
+    description: 'Search the live web for laws, rates, news or anything not in the ledger. Returns {title,url,snippet} results. Cite pages in your reply as markdown links.',
     params: { query: { type: 'string', required: true } },
     run: async (_db, a) => ({
       results: await withTimeout(require('./web-search').searchWeb(String(a.query || '')), 60000, 'Web search'),
@@ -156,13 +156,13 @@ const TOOLS = [
   },
   {
     name: 'read_webpage',
-    description: 'Open one web page (usually a web_search result) and return its readable text so you can quote specifics. Cite the page in your reply with a markdown link.',
+    description: 'Fetch one web page (usually a web_search result) and return its readable text. Cite it in your reply with a markdown link.',
     params: { url: { type: 'string', required: true } },
     run: async (_db, a) => withTimeout(require('./web-search').readPage(String(a.url || '')), 60000, 'Reading the page'),
   },
   {
     name: 'remember',
-    description: 'Save a short note to your persistent memory. Use when the user tells you a preference or fact worth keeping (e.g. "always quote in USD for Acme"). Saved notes are shown to you in every future conversation.',
+    description: 'Save a short note to your persistent memory when the user states a preference or fact worth keeping. Notes are shown to you in future conversations.',
     params: { note: { type: 'string', required: true } },
     run: (db, a) => {
       const note = String(a.note || '').slice(0, 500);
@@ -225,45 +225,30 @@ async function executeTool(db, name, args) {
 
 const APP_GUIDE = `
 You are the built-in assistant for Ledgerly, a desktop accounting app for Australian
-small businesses. You are embedded in the app and can look up live data with your tools.
+small businesses, with read-only tools over the user's live ledger.
 
-How Ledgerly works (use this to answer "how do I" questions):
-- Dashboard: bank balances, cash in/out chart, invoice/bill totals.
-- Business menu: Invoices, Quotes, Bills to pay, Purchase orders, Repeating invoices,
-  Expense claims, Products & services.
-  - Invoices/bills lifecycle: Draft -> (optional Submit for approval) -> Approve (posts to
-    the ledger; document becomes immutable) -> Record payment -> Paid. Mistakes are fixed
-    by voiding (reverses the ledger) or issuing a credit note (+ New -> Credit note),
-    which is approved then allocated to a document or refunded in cash.
-  - Quotes convert to invoices; purchase orders convert to bills; repeating templates
-    auto-generate on schedule when the app starts.
-  - Expense claims: receipts entered GST-inclusive; approving posts the GST credit and a
-    reimbursement liability; pay it from a bank account.
-- Accounting menu: Bank accounts (spend/receive money, transfers, CSV statement import,
-  reconciliation with match suggestions), Reports, Chart of accounts, Fixed assets
-  (straight-line depreciation runs, disposal), Manual journals, Budget manager.
-- Projects: time entries, invoice unbilled time, profitability. Payroll: employees,
-  draft pay runs with editable PAYG estimates and super, post then pay wages.
-- Reports: P&L, Balance Sheet, Trial Balance, Aged Receivables/Payables, Account
-  Transactions, GST Summary, BAS summary (G1/1A/1B/W1/W2), Cash Flow Forecast,
-  Budget vs Actual. All printable / exportable to PDF.
-- Settings: organisation & ABN, invoice numbering, tax rates, super %, AI assistant.
+App map (for "how do I" questions):
+- Business menu: invoices, quotes, bills, purchase orders, repeating invoices, expense
+  claims, products & services. Lifecycle: Draft -> Approve (posts to the ledger, becomes
+  immutable) -> Record payment -> Paid. Fix mistakes by voiding or with a credit note
+  (+ New -> Credit note) allocated to the document. Quotes convert to invoices, POs to bills.
+- Accounting menu: bank accounts (spend/receive, transfers, CSV import, reconciliation),
+  chart of accounts, fixed assets, manual journals, budgets.
+- Projects (time -> invoices, profitability), Payroll (pay runs, PAYG, super), Reports
+  (P&L, balance sheet, trial balance, aged AR/AP, GST/BAS, cash flow, budget vs actual),
+  Settings (organisation, tax rates, AI assistant).
 
 Rules:
-- All amounts from tools are integer cents — divide by 100 and format as currency
-  (the org base currency, usually AUD) before showing the user.
-- Use the calculate tool for any arithmetic beyond trivial sums.
-- For Australian tax/legal questions (GST, BAS, PAYG, super, Fair Work, etc.) give
-  accurate general information for Victoria/Australia where you can, and note that it is
-  general information, not professional tax or legal advice.
-- For laws, legislation, rates, thresholds or anything current, use web_search (and
-  read_webpage for details). When you rely on a web page, link it inline in your reply
-  with markdown, e.g. "the test is set out **[here](https://www.legislation.gov.au/...)**".
-  Sources you consulted are listed automatically under your reply — you don't need to
-  repeat a full bibliography, just the inline links where they help.
-- Be concise and concrete. When you used tools, base your numbers on the tool results.
-- If the user asks you to create or change records, explain you are read-only for now
-  and tell them exactly where in the app to do it themselves.
+- Tool amounts are integer cents — divide by 100 and show as currency (usually AUD).
+- Use the calculate tool for non-trivial maths; base numbers on tool results.
+- AU tax/legal answers are general information, not professional advice.
+- Use web_search for laws, rates, thresholds or anything current.
+- Whenever you mention a website, organisation or page found on the web — or say
+  "I found it here" — make that mention itself a markdown link, e.g.
+  **[Fair Work Ombudsman](https://www.fairwork.gov.au)**. Never name a web source as
+  plain text. Consulted pages are listed under your reply automatically.
+- You are read-only: to change records, tell the user where in the app to do it.
+- Be concise.
 `;
 
 function buildSystemPrompt(db) {
@@ -579,6 +564,7 @@ async function chat(db, { message, attachments = [] }, onEvent = null) {
     await localAI.ensureModelLoaded(cfg.baseUrl, cfg.model, cfg.contextLength,
       (label) => onEvent?.({ type: 'status', label }));
   }
+  onEvent?.({ type: 'status', label: 'Processing request…' });
 
   // Last 16 stored turns become plain-text context.
   const hist = history(db, 16).map(m => ({ role: m.role, content: m.content }));

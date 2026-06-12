@@ -417,11 +417,13 @@ async function runSmokeTour(outDir) {
     const ta = document.getElementById('ai-text');
     ta.value = 'How many invoices are awaiting payment?';
     document.getElementById('ai-form').dispatchEvent(new Event('submit', { cancelable: true }));
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 250));
       const msgs = document.querySelectorAll('#ai-msgs .ai-msg.assistant');
       const last = msgs[msgs.length - 1];
-      if (last && /awaiting payment/.test(last.textContent) && !last.querySelector('.ai-thinking')) {
+      // The reply types out progressively; the footer (with tools used)
+      // renders only once typing finishes — wait for that.
+      if (last && /awaiting payment/.test(last.textContent) && last.querySelector('.ai-footer')) {
         return last.textContent.includes('list_documents');
       }
     }

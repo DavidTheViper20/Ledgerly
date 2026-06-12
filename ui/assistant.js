@@ -65,6 +65,8 @@
     h = h.replace(/```([\s\S]*?)```/g, (_, code) => `<pre>${code.replace(/^\n|\n$/g, '')}</pre>`);
     h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>');
     h = h.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" class="ai-link">$1</a>');
+    // Bare URLs become links too (the [\s(] guard keeps hrefs above untouched).
+    h = h.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" class="ai-link">$2</a>');
     h = h.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
     h = h.replace(/^### (.*)$/gm, '<b>$1</b>');
     h = h.replace(/^## (.*)$/gm, '<b>$1</b>');
@@ -73,20 +75,32 @@
     return h;
   }
 
-  function sourcesHtml(sources) {
-    if (!sources || !sources.length) return '';
-    return `<details class="ai-sources"><summary>Sources (${sources.length})</summary>` +
-      sources.map(s =>
-        `<div class="ai-source"><a href="${esc(s.url)}" class="ai-link">${esc(s.title || s.url)}</a>` +
-        (s.snippet ? `<div class="ai-source-sn">${esc(s.snippet)}</div>` : '') + '</div>').join('') +
-      '</details>';
+  function thinkHtml(think) {
+    return think ? `<div class="ai-think-live">${esc(think)}</div>` : '';
   }
 
-  function thinkHtml(think, collapsed) {
-    if (!think) return '';
-    return collapsed
-      ? `<details class="ai-think"><summary>Thinking</summary><div class="ai-think-body">${esc(think)}</div></details>`
-      : `<div class="ai-think-live">${esc(think)}</div>`;
+  // Message footer: a divider under the reply, then Thinking / Sources /
+  // tools-used on one row. The Thinking and Sources panels are mutually
+  // exclusive — opening one closes the other (handled by the host click
+  // listener below).
+  function footerHtml(think, sources, toolsUsed) {
+    sources = sources || [];
+    toolsUsed = toolsUsed || [];
+    if (!think && !sources.length && !toolsUsed.length) return '';
+    const sourceList = sources.map(s => {
+      const desc = [s.title, s.snippet].filter(Boolean).join(' — ');
+      return `<div class="ai-source"><a href="${esc(s.url)}" class="ai-link">${esc(s.url)}</a>` +
+        (desc ? `<div class="ai-source-sn">${esc(desc)}</div>` : '') + '</div>';
+    }).join('');
+    return `<div class="ai-footer">
+      <div class="ai-footer-row">
+        ${think ? '<button type="button" class="ai-foot-btn" data-panel="think">Thinking</button>' : ''}
+        ${sources.length ? `<button type="button" class="ai-foot-btn" data-panel="sources">Sources (${sources.length})</button>` : ''}
+        ${toolsUsed.length ? `<span class="ai-meta">${toolMeta(toolsUsed)}</span>` : ''}
+      </div>
+      ${think ? `<div class="ai-foot-panel ai-think-body" data-panel="think" hidden>${esc(think)}</div>` : ''}
+      ${sources.length ? `<div class="ai-foot-panel" data-panel="sources" hidden>${sourceList}</div>` : ''}
+    </div>`;
   }
 
   const TOOL_LABELS = {
@@ -125,7 +139,7 @@
         let tools = [], sources = [];
         try { tools = JSON.parse(m.tools_used || '[]'); } catch {}
         try { sources = JSON.parse(m.sources || '[]'); } catch {}
-        addMsg(m.role, md(m.content) + sourcesHtml(sources), m.role === 'assistant' ? toolMeta(tools) : '');
+        addMsg(m.role, md(m.content) + (m.role === 'assistant' ? footerHtml('', sources, tools) : ''));
       }
     } catch (e) {
       addMsg('assistant', md('Could not load chat history: ' + e.message));
@@ -162,39 +176,66 @@
     const pending = addMsg('assistant', '');
     const bubbleMsg = pending.querySelector('.ai-bubble-msg');
 
-    // Streaming state: a status row ("Thinking…", "Searching the web…")
-    // shows until the first reply token; thinking streams into a small
-    // fixed-height window that collapses once the reply starts.
-    let think = '', reply = '', label = 'Thinking…';
-    function render(final, result) {
+    // Streaming display:
+    //  - dots alone until a status arrives ("Loading model…" → "Processing
+    //    request…" → tool labels); "Thinking" appears only while thinking
+    //    text is actually streaming, in a small fixed-height live window.
+    //  - the reply is typed out character-by-character (typewriter), with
+    //    the speed adapting to the backlog so it never falls behind.
+    //  - once the reply starts, the thinking moves below it as a collapsed
+    //    dropdown; sources and tool info follow at the bottom when done.
+    let think = '', label = '', replyTarget = '', replyShown = '';
+    let done = false, result = null, typeTimer = null;
+
+    function render() {
       let html = '';
-      if (!final && !reply) {
+      const finished = done && replyShown.length >= replyTarget.length;
+      if (!replyTarget && !done) {
+        const lbl = think ? 'Thinking…' : label;
         html += `<span class="ai-status"><span class="ai-thinking"><span></span><span></span><span></span></span>` +
-          `<span class="ai-status-label">${esc(label)}</span></span>`;
+          (lbl ? `<span class="ai-status-label">${esc(lbl)}</span>` : '') + '</span>';
+        html += thinkHtml(think);
       }
-      html += thinkHtml(think, final || !!reply);
-      if (reply || final) html += `<div class="ai-reply">${md(final ? result.reply : reply)}</div>`;
-      if (final) {
-        html += sourcesHtml(result.sources);
-        if (result.toolsUsed?.length) html += `<div class="ai-meta">${toolMeta(result.toolsUsed)}</div>`;
+      if (replyShown) html += `<div class="ai-reply">${md(replyShown)}</div>`;
+      if (finished && result) {
+        html += footerHtml(think, result.sources, result.toolsUsed);
       }
       bubbleMsg.innerHTML = html;
       const live = bubbleMsg.querySelector('.ai-think-live');
       if (live) live.scrollTop = live.scrollHeight;
       msgsEl.scrollTop = msgsEl.scrollHeight;
     }
-    render(false);
+
+    function pump() {
+      if (replyShown.length < replyTarget.length) {
+        const backlog = replyTarget.length - replyShown.length;
+        const step = Math.max(1, Math.round(backlog / 30));
+        replyShown = replyTarget.slice(0, replyShown.length + step);
+        render();
+      } else if (done) {
+        clearInterval(typeTimer);
+        typeTimer = null;
+        render();
+      }
+    }
+
+    render();
     setBusy(true);
     try {
+      typeTimer = setInterval(pump, 16);
       const r = await window.ledgerly.assistantStream({ message, attachments: atts }, (ev) => {
-        if (ev.type === 'status') { label = ev.label; }
-        else if (ev.type === 'tool') { label = TOOL_LABELS[ev.name] || `Checking ${ev.name.replace(/_/g, ' ')}…`; }
-        else if (ev.type === 'thinking') { think += ev.text; label = 'Thinking…'; }
-        else if (ev.type === 'reply') { reply += ev.text; }
-        render(false);
+        if (ev.type === 'status') { label = ev.label; render(); }
+        else if (ev.type === 'tool') { label = TOOL_LABELS[ev.name] || `Checking ${ev.name.replace(/_/g, ' ')}…`; render(); }
+        else if (ev.type === 'thinking') { think += ev.text; render(); }
+        else if (ev.type === 'reply') { replyTarget += ev.text; }
       });
-      render(true, r);
+      result = r;
+      replyTarget = r.reply;
+      done = true;
+      if (!typeTimer) render();
     } catch (e) {
+      clearInterval(typeTimer);
+      typeTimer = null;
       bubbleMsg.innerHTML = `<span class="ai-error">${esc(e.message)}</span>`;
     } finally {
       setBusy(false);
@@ -206,7 +247,17 @@
   // All links in the assistant open in the user's default browser.
   host.addEventListener('click', (ev) => {
     const a = ev.target.closest && ev.target.closest('a[href^="http"]');
-    if (a) { ev.preventDefault(); window.ledgerly.openExternal(a.href); }
+    if (a) { ev.preventDefault(); window.ledgerly.openExternal(a.href); return; }
+    // Footer toggles: Thinking and Sources panels are mutually exclusive.
+    const btn = ev.target.closest && ev.target.closest('.ai-foot-btn');
+    if (btn) {
+      const footer = btn.closest('.ai-footer');
+      const panel = footer.querySelector(`.ai-foot-panel[data-panel="${btn.dataset.panel}"]`);
+      const wasOpen = panel && !panel.hidden;
+      footer.querySelectorAll('.ai-foot-panel').forEach(p => { p.hidden = true; });
+      footer.querySelectorAll('.ai-foot-btn').forEach(b => b.classList.remove('open'));
+      if (panel && !wasOpen) { panel.hidden = false; btn.classList.add('open'); }
+    }
   });
 
   bubble.addEventListener('click', async () => {
