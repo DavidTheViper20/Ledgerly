@@ -76,6 +76,7 @@ async function loadRefData() {
   STATE.accounts = accounts;
   STATE.taxRates = taxRates;
   document.getElementById('org-name').textContent = settings.org_name || '';
+  window.assistantSyncVisibility?.();
 }
 
 function accountOptions(selectedId, { filter = null, blank = true } = {}) {

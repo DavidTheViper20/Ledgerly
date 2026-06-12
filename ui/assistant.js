@@ -32,6 +32,7 @@
         <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
       </svg>
     </button>`;
+  host.hidden = true; // shown only once an AI provider is configured in Settings
   document.body.appendChild(host);
 
   const panel = document.getElementById('ai-panel');
@@ -46,12 +47,24 @@
   let busy = false;
   let loaded = false;
 
+  // Show the bubble only when an AI provider is configured; called from
+  // loadRefData() so it tracks settings changes without a restart.
+  window.assistantSyncVisibility = function () {
+    const configured = !!((window.STATE && STATE.settings && STATE.settings.ai_provider) || '').trim();
+    host.hidden = !configured;
+    if (!configured) {
+      panel.hidden = true;
+      bubble.classList.remove('open');
+    }
+  };
+
   // Very small markdown-ish formatter: escapes HTML then applies bold,
   // inline code, code fences, links and bullet lines.
   function md(text) {
     let h = esc(text);
     h = h.replace(/```([\s\S]*?)```/g, (_, code) => `<pre>${code.replace(/^\n|\n$/g, '')}</pre>`);
     h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    h = h.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" class="ai-link">$1</a>');
     h = h.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
     h = h.replace(/^### (.*)$/gm, '<b>$1</b>');
     h = h.replace(/^## (.*)$/gm, '<b>$1</b>');
@@ -59,6 +72,28 @@
     h = h.replace(/\n/g, '<br>');
     return h;
   }
+
+  function sourcesHtml(sources) {
+    if (!sources || !sources.length) return '';
+    return `<details class="ai-sources"><summary>Sources (${sources.length})</summary>` +
+      sources.map(s =>
+        `<div class="ai-source"><a href="${esc(s.url)}" class="ai-link">${esc(s.title || s.url)}</a>` +
+        (s.snippet ? `<div class="ai-source-sn">${esc(s.snippet)}</div>` : '') + '</div>').join('') +
+      '</details>';
+  }
+
+  function thinkHtml(think, collapsed) {
+    if (!think) return '';
+    return collapsed
+      ? `<details class="ai-think"><summary>Thinking</summary><div class="ai-think-body">${esc(think)}</div></details>`
+      : `<div class="ai-think-live">${esc(think)}</div>`;
+  }
+
+  const TOOL_LABELS = {
+    web_search: 'Searching the web…',
+    read_webpage: 'Reading a page…',
+    calculate: 'Calculating…',
+  };
 
   function addMsg(role, html, meta = '') {
     const div = document.createElement('div');
@@ -87,9 +122,10 @@
         return;
       }
       for (const m of hist) {
-        let tools = [];
+        let tools = [], sources = [];
         try { tools = JSON.parse(m.tools_used || '[]'); } catch {}
-        addMsg(m.role, md(m.content), m.role === 'assistant' ? toolMeta(tools) : '');
+        try { sources = JSON.parse(m.sources || '[]'); } catch {}
+        addMsg(m.role, md(m.content) + sourcesHtml(sources), m.role === 'assistant' ? toolMeta(tools) : '');
       }
     } catch (e) {
       addMsg('assistant', md('Could not load chat history: ' + e.message));
@@ -123,21 +159,55 @@
     textEl.value = '';
     textEl.style.height = 'auto';
     addMsg('user', md(message) + (atts.length ? `<div class="ai-meta">📎 ${atts.map(a => esc(a.name)).join(', ')}</div>` : ''));
-    const thinking = addMsg('assistant', '<span class="ai-thinking"><span></span><span></span><span></span></span>');
+    const pending = addMsg('assistant', '');
+    const bubbleMsg = pending.querySelector('.ai-bubble-msg');
+
+    // Streaming state: a status row ("Thinking…", "Searching the web…")
+    // shows until the first reply token; thinking streams into a small
+    // fixed-height window that collapses once the reply starts.
+    let think = '', reply = '', label = 'Thinking…';
+    function render(final, result) {
+      let html = '';
+      if (!final && !reply) {
+        html += `<span class="ai-status"><span class="ai-thinking"><span></span><span></span><span></span></span>` +
+          `<span class="ai-status-label">${esc(label)}</span></span>`;
+      }
+      html += thinkHtml(think, final || !!reply);
+      if (reply || final) html += `<div class="ai-reply">${md(final ? result.reply : reply)}</div>`;
+      if (final) {
+        html += sourcesHtml(result.sources);
+        if (result.toolsUsed?.length) html += `<div class="ai-meta">${toolMeta(result.toolsUsed)}</div>`;
+      }
+      bubbleMsg.innerHTML = html;
+      const live = bubbleMsg.querySelector('.ai-think-live');
+      if (live) live.scrollTop = live.scrollHeight;
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+    render(false);
     setBusy(true);
     try {
-      const r = await window.ledgerly.assistant('chat', { message, attachments: atts });
-      thinking.querySelector('.ai-bubble-msg').innerHTML = md(r.reply) +
-        (r.toolsUsed.length ? `<div class="ai-meta">${toolMeta(r.toolsUsed)}</div>` : '');
+      const r = await window.ledgerly.assistantStream({ message, attachments: atts }, (ev) => {
+        if (ev.type === 'status') { label = ev.label; }
+        else if (ev.type === 'tool') { label = TOOL_LABELS[ev.name] || `Checking ${ev.name.replace(/_/g, ' ')}…`; }
+        else if (ev.type === 'thinking') { think += ev.text; label = 'Thinking…'; }
+        else if (ev.type === 'reply') { reply += ev.text; }
+        render(false);
+      });
+      render(true, r);
     } catch (e) {
-      thinking.querySelector('.ai-bubble-msg').innerHTML =
-        `<span class="ai-error">${esc(e.message)}</span>`;
+      bubbleMsg.innerHTML = `<span class="ai-error">${esc(e.message)}</span>`;
     } finally {
       setBusy(false);
       msgsEl.scrollTop = msgsEl.scrollHeight;
       textEl.focus();
     }
   }
+
+  // All links in the assistant open in the user's default browser.
+  host.addEventListener('click', (ev) => {
+    const a = ev.target.closest && ev.target.closest('a[href^="http"]');
+    if (a) { ev.preventDefault(); window.ledgerly.openExternal(a.href); }
+  });
 
   bubble.addEventListener('click', async () => {
     panel.hidden = !panel.hidden;

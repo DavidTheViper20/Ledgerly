@@ -235,6 +235,12 @@ table.lines .rm { color: var(--red); cursor: pointer; font-size: 15px; padding: 
   .card { box-shadow: none; padding: 0; }
 }
 
+.org-current {
+  display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px;
+  background: var(--brand); color: #fff; font-size: 10.5px; font-weight: 700;
+  vertical-align: 1px;
+}
+
 /* ---------- AI assistant ---------- */
 #assistant-host { position: fixed; right: 22px; bottom: 22px; z-index: 80; }
 #ai-bubble {
@@ -250,6 +256,7 @@ table.lines .rm { color: var(--red); cursor: pointer; font-size: 15px; padding: 
   background: #fff; border-radius: 14px; box-shadow: 0 16px 50px rgba(20, 24, 40, .3);
   display: flex; flex-direction: column; overflow: hidden;
 }
+#ai-panel[hidden], #assistant-host[hidden] { display: none; }
 .ai-head {
   display: flex; align-items: center; gap: 8px; padding: 11px 13px;
   background: #181c2e; color: #fff;
@@ -285,6 +292,26 @@ table.lines .rm { color: var(--red); cursor: pointer; font-size: 15px; padding: 
 }
 .ai-thinking span:nth-child(2) { animation-delay: .2s; }
 .ai-thinking span:nth-child(3) { animation-delay: .4s; }
+.ai-status { display: inline-flex; align-items: center; gap: 8px; }
+.ai-status-label { font-size: 12.5px; color: #778; }
+.ai-think-live {
+  height: 96px; overflow-y: auto; margin-top: 8px; padding: 8px 10px;
+  background: #f4f4fb; border: 1px solid #e3e3f2; border-radius: 8px;
+  font: 11.5px/1.5 ui-monospace, monospace; color: #556; white-space: pre-wrap;
+}
+details.ai-think { margin-bottom: 6px; }
+details.ai-think summary { cursor: pointer; font-size: 11.5px; color: #889; }
+details.ai-think .ai-think-body {
+  max-height: 140px; overflow-y: auto; margin: 6px 0; padding: 8px 10px;
+  background: #f4f4fb; border: 1px solid #e3e3f2; border-radius: 8px;
+  font: 11.5px/1.5 ui-monospace, monospace; color: #556; white-space: pre-wrap;
+}
+.ai-link { color: var(--brand); font-weight: 600; text-decoration: underline; cursor: pointer; }
+.ai-msg.user .ai-link { color: #fff; }
+details.ai-sources { margin-top: 8px; border-top: 1px solid #ececf6; padding-top: 6px; }
+details.ai-sources summary { cursor: pointer; font-size: 11.5px; color: #889; }
+.ai-source { margin: 7px 0 0 2px; font-size: 12px; }
+.ai-source-sn { color: #889; font-size: 11px; margin-top: 1px; }
 @keyframes ai-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 .ai-attach-row { padding: 6px 12px; background: #fff; border-top: 1px solid var(--line); }
 .ai-chip {
