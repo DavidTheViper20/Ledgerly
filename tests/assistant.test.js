@@ -35,7 +35,12 @@ function mockFetch(handler) {
     const body = JSON.parse(opts.body);
     calls.push({ url, headers: opts.headers, body });
     const out = handler(calls.length, body, url);
-    return { ok: true, status: 200, text: async () => JSON.stringify(out) };
+    return {
+      ok: true, status: 200,
+      headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) },
+      json: async () => out,
+      text: async () => JSON.stringify(out),
+    };
   };
   return calls;
 }
@@ -53,16 +58,16 @@ test('assistant: safeCalc handles precedence, parens, unary minus; rejects junk'
 
 // ---------- tools ----------
 
-test('assistant: tools read live ledger data', () => {
+test('assistant: tools read live ledger data', async () => {
   const { inv } = setupOrg();
-  const docs = assistant.executeTool(db, 'list_documents', { kind: 'ACCREC' });
+  const docs = await assistant.executeTool(db, 'list_documents', { kind: 'ACCREC' });
   assert.equal(docs.length, 1);
   assert.equal(docs[0].total_cents, 100000);
-  const one = assistant.executeTool(db, 'get_document', { id: inv.id });
+  const one = await assistant.executeTool(db, 'get_document', { id: inv.id });
   assert.equal(one.lines[0].description, 'Consulting');
-  const banks = assistant.executeTool(db, 'bank_accounts', {});
+  const banks = await assistant.executeTool(db, 'bank_accounts', {});
   assert.deepEqual(banks, []);
-  const bad = assistant.executeTool(db, 'nope', {});
+  const bad = await assistant.executeTool(db, 'nope', {});
   assert.match(bad.error, /Unknown tool/);
 });
 

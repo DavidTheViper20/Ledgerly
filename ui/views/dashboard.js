@@ -83,16 +83,21 @@ VIEWS.dashboard = async function (main) {
 };
 
 // ---------- first-run setup wizard ----------
-VIEWS.setup = async function (main) {
-  const s = STATE.settings;
+VIEWS.setup = async function (main, params = {}) {
+  // Two modes: the mandatory first-run setup (no complete org yet), and
+  // "add another organisation" reached from Settings — which keeps the
+  // current org untouched until the form is submitted, so Back is safe.
+  const addingNew = params.new === '1' && (STATE.settings.setup_complete || '0') === '1';
+  const s = addingNew ? {} : STATE.settings;
+  const e = (v) => esc(v || '');
   main.innerHTML = `
     <div class="setup-wrap">
       <div class="logo-big">Ledgerly</div>
       <div class="card">
-        <h2>Set up your organisation</h2>
+        <h2>${addingNew ? 'Create a new organisation' : 'Set up your organisation'}</h2>
         <form id="setup-form">
           <label class="field">Organisation name
-            <input name="org_name" required value="${esc(s.org_name)}" placeholder="e.g. Viper Design Studio" />
+            <input name="org_name" required value="${e(s.org_name)}" placeholder="e.g. Viper Design Studio" />
           </label>
           <div class="field-row">
             <label class="field">Base currency
@@ -110,10 +115,10 @@ VIEWS.setup = async function (main) {
           </div>
           <div class="field-row">
             <label class="field">ABN (optional)
-              <input name="org_tax_number" value="${esc(s.org_tax_number)}" placeholder="51 824 753 556" />
+              <input name="org_tax_number" value="${e(s.org_tax_number)}" placeholder="51 824 753 556" />
             </label>
             <label class="field">Email (optional)
-              <input name="org_email" value="${esc(s.org_email)}" />
+              <input name="org_email" value="${e(s.org_email)}" />
             </label>
           </div>
           <p style="color:var(--ink-soft);font-size:12.5px">
@@ -121,11 +126,14 @@ VIEWS.setup = async function (main) {
             and a standard chart of accounts are ready to go. Everything can be changed later in Settings.
           </p>
           <div class="btn-row">
-            <button class="btn primary" type="submit">Start using Ledgerly</button>
+            <button class="btn primary" type="submit">${addingNew ? 'Create organisation' : 'Start using Ledgerly'}</button>
+            ${addingNew ? '<button class="btn" type="button" id="setup-back">← Back</button>' : ''}
           </div>
         </form>
       </div>
     </div>`;
+
+  document.getElementById('setup-back')?.addEventListener('click', () => { location.hash = '#/settings'; });
 
   document.getElementById('setup-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -133,8 +141,15 @@ VIEWS.setup = async function (main) {
     const kv = Object.fromEntries(f.entries());
     if (!kv.org_name.trim()) return toast('Organisation name is required', 'error');
     kv.fy_end_day = kv.fy_end_month === '2' ? '28' : ['4', '6', '9', '11'].includes(kv.fy_end_month) ? '30' : '31';
-    kv.setup_complete = '1';
     try {
+      if (addingNew) {
+        // Creates a fresh database, switches to it, and reloads into it.
+        await window.ledgerly.orgs('create', { settings: kv });
+        location.hash = '#/dashboard';
+        location.reload();
+        return;
+      }
+      kv.setup_complete = '1';
       await api('settings.update', kv);
       toast('Welcome to Ledgerly!', 'success');
       navigate('#/dashboard');

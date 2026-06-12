@@ -10,9 +10,56 @@ const api = require('../src/api');
 let db;
 let win;
 
-function dbPath() {
-  if (process.env.LEDGERLY_DB) return process.env.LEDGERLY_DB;
-  return path.join(app.getPath('userData'), 'ledgerly.db');
+// ---------- organisations ----------
+// Each organisation lives in its own SQLite file (org-<id>.db in userData),
+// tracked by orgs.json. LEDGERLY_DB overrides everything with a single fixed
+// database (used by tests), disabling org management.
+
+let registry = null; // { active, orgs: [{ id, name, file }] }
+
+function registryPath() { return path.join(app.getPath('userData'), 'orgs.json'); }
+function orgDbPath(entry) { return path.join(app.getPath('userData'), entry.file); }
+function newOrgId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function saveRegistry() { fs.writeFileSync(registryPath(), JSON.stringify(registry, null, 2)); }
+
+function initRegistry() {
+  if (process.env.LEDGERLY_DB) return;
+  try { registry = JSON.parse(fs.readFileSync(registryPath(), 'utf8')); } catch { registry = null; }
+  if (registry && registry.orgs.length) return;
+  // First run (or pre-multi-org install): adopt the legacy single database
+  // if one exists, otherwise start with one fresh organisation.
+  const id = newOrgId();
+  const entry = { id, name: 'New organisation', file: `org-${id}.db` };
+  const legacy = path.join(app.getPath('userData'), 'ledgerly.db');
+  if (fs.existsSync(legacy)) {
+    fs.renameSync(legacy, orgDbPath(entry));
+    for (const ext of ['-wal', '-shm']) {
+      if (fs.existsSync(legacy + ext)) fs.renameSync(legacy + ext, orgDbPath(entry) + ext);
+    }
+  }
+  registry = { active: id, orgs: [entry] };
+  saveRegistry();
+}
+
+function activeOrgEntry() { return registry.orgs.find(o => o.id === registry.active) || registry.orgs[0]; }
+
+// Refresh the registry's display name for the active org from its settings.
+function syncActiveOrgName() {
+  if (!registry) return;
+  try {
+    const name = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get()?.value;
+    const entry = activeOrgEntry();
+    if (name && entry && entry.name !== name) { entry.name = name; saveRegistry(); }
+  } catch { /* settings table empty on brand-new org */ }
+}
+
+function openActiveOrg() {
+  db = dbm.open(process.env.LEDGERLY_DB || orgDbPath(activeOrgEntry()));
+  try {
+    const r = api.call(db, 'repeating.generateDue', {});
+    if (r.created) console.log(`Generated ${r.created} repeating document(s)`);
+  } catch (e) { console.error('Repeating invoice generation failed:', e.message); }
+  syncActiveOrgName();
 }
 
 function createWindow() {
@@ -39,17 +86,85 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  db = dbm.open(dbPath());
-
-  // Generate any repeating invoices that have fallen due since last launch.
-  try {
-    const r = api.call(db, 'repeating.generateDue', {});
-    if (r.created) console.log(`Generated ${r.created} repeating document(s)`);
-  } catch (e) { console.error('Repeating invoice generation failed:', e.message); }
+  initRegistry();
+  openActiveOrg();
 
   ipcMain.handle('api', (_e, method, args) => {
     try {
-      return { ok: true, data: api.call(db, method, args) };
+      const out = api.call(db, method, args);
+      if (method === 'settings.update') syncActiveOrgName();
+      return { ok: true, data: out };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  const ORG_METHODS = {
+    list() {
+      if (!registry) {
+        const name = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get()?.value || 'Organisation';
+        return [{ id: 'env', name, active: true }];
+      }
+      syncActiveOrgName();
+      return registry.orgs.map(o => ({ id: o.id, name: o.name, active: o.id === registry.active }));
+    },
+    create({ settings = {} }) {
+      if (!registry) throw new Error('Organisation management is disabled when LEDGERLY_DB is set');
+      if (!String(settings.org_name || '').trim()) throw new Error('Organisation name is required');
+      const id = newOrgId();
+      const entry = { id, name: settings.org_name.trim(), file: `org-${id}.db` };
+      const ndb = dbm.open(orgDbPath(entry));
+      api.call(ndb, 'settings.update', { ...settings, setup_complete: '1' });
+      db.close();
+      db = ndb;
+      registry.orgs.push(entry);
+      registry.active = id;
+      saveRegistry();
+      return { id };
+    },
+    switch({ id }) {
+      if (!registry) throw new Error('Organisation management is disabled when LEDGERLY_DB is set');
+      const entry = registry.orgs.find(o => o.id === id);
+      if (!entry) throw new Error('Unknown organisation');
+      if (registry.active === id) return { id };
+      db.close();
+      registry.active = id;
+      saveRegistry();
+      openActiveOrg();
+      return { id };
+    },
+    delete({ id, confirmName }) {
+      if (!registry) throw new Error('Organisation management is disabled when LEDGERLY_DB is set');
+      const entry = registry.orgs.find(o => o.id === id);
+      if (!entry) throw new Error('Unknown organisation');
+      if ((confirmName || '').trim() !== entry.name) {
+        throw new Error('The name you typed does not match the organisation name');
+      }
+      const wasActive = registry.active === id;
+      if (wasActive) db.close();
+      registry.orgs = registry.orgs.filter(o => o.id !== id);
+      for (const ext of ['', '-wal', '-shm']) {
+        try { fs.rmSync(orgDbPath(entry) + ext, { force: true }); } catch {}
+      }
+      if (!registry.orgs.length) {
+        // Last organisation deleted: start over with a fresh one — the app
+        // will land on the mandatory first-run setup screen.
+        const nid = newOrgId();
+        registry.orgs.push({ id: nid, name: 'New organisation', file: `org-${nid}.db` });
+        registry.active = nid;
+      } else if (wasActive) {
+        registry.active = registry.orgs[0].id;
+      }
+      saveRegistry();
+      if (wasActive) openActiveOrg();
+      return { ok: true };
+    },
+  };
+  ipcMain.handle('orgs', (_e, method, args) => {
+    try {
+      const fn = ORG_METHODS[method];
+      if (!fn) throw new Error('Unknown orgs method: ' + method);
+      return { ok: true, data: fn(args || {}) };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -63,6 +178,7 @@ app.whenReady().then(() => {
     memories: () => assistant.memories(db),
     forget: (a) => assistant.forget(db, a.id),
     test: () => assistant.testConnection(db),
+    localModels: () => assistant.localModels(),
   };
   ipcMain.handle('assistant', async (_e, method, args) => {
     try {
@@ -72,6 +188,24 @@ app.whenReady().then(() => {
     } catch (err) {
       return { ok: false, error: err.message };
     }
+  });
+
+  // Streaming chat: progress events (thinking/reply/tool/status) are pushed
+  // to the renderer tagged with the caller-supplied id; the final result
+  // resolves the invoke as usual.
+  ipcMain.handle('assistant-stream', async (e, id, args) => {
+    try {
+      const data = await assistant.chat(db, args || {}, (ev) => {
+        try { e.sender.send('assistant-stream-event', { id, ...ev }); } catch { /* window gone */ }
+      });
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('open-external', (_e, url) => {
+    if (/^https?:\/\//i.test(String(url))) require('electron').shell.openExternal(String(url));
   });
 
   ipcMain.handle('export-pdf', async (_e, suggestedName) => {

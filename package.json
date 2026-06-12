@@ -1,5 +1,6 @@
 {
   "name": "ledgerly",
+  "productName": "Ledgerly",
   "version": "0.1.0",
   "description": "Ledgerly — open desktop accounting: invoicing, bills, bank reconciliation and financial reporting.",
   "main": "electron/main.js",
@@ -8,10 +9,15 @@
     "start": "electron . --no-sandbox",
     "demo": "node scripts/start-demo.js",
     "smoke": "node scripts/run-smoke.js",
-    "test": "node --test 'tests/*.test.js'"
+    "test": "node --test 'tests/*.test.js'",
+    "pack": "electron-packager . Ledgerly --platform=darwin --no-asar --icon=build/icon.icns --out=dist --overwrite --ignore=^/dist --ignore=^/build/icon.iconset"
   },
   "license": "MIT",
   "devDependencies": {
+    "@electron/packager": "^20.0.1",
     "electron": "^37.0.0"
+  },
+  "dependencies": {
+    "playwright-core": "^1.60.0"
   }
 }
