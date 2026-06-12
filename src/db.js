@@ -467,6 +467,7 @@ const DEFAULT_SETTINGS = {
   ai_api_key: '',
   ai_model: '',
   ai_max_tokens: '2048',
+  ai_context_length: '8192',
   tax_label: 'GST',
   super_guarantee_pct: '12',   // AU super guarantee from 1 July 2025
 };
@@ -488,6 +489,8 @@ function migrate(db) {
   // Project tagging on revenue/cost lines.
   ensureColumn(db, 'invoice_lines', 'project_id', 'INTEGER');
   ensureColumn(db, 'bank_transaction_lines', 'project_id', 'INTEGER');
+  // Web sources cited by assistant replies.
+  ensureColumn(db, 'chat_messages', 'sources', 'TEXT');
   // System accounts added after first release (no-op on fresh DBs).
   const have = new Set(db.prepare('SELECT code FROM accounts').all().map(r => r.code));
   if (have.size) {

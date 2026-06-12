@@ -3,6 +3,8 @@
 VIEWS.settingsView = async function (main) {
   const s = STATE.settings;
   const taxRates = STATE.taxRates;
+  let orgs = [];
+  try { orgs = await window.ledgerly.orgs('list'); } catch { /* env-pinned db */ }
 
   main.innerHTML = `
     <div class="page-head"><h1>Settings</h1></div>
@@ -36,6 +38,26 @@ VIEWS.settingsView = async function (main) {
       </div>
 
       <div>
+        <div class="card" id="orgs-card">
+          <h2>Organisations</h2>
+          <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0">
+            Each organisation keeps completely separate books — contacts, invoices, bank
+            accounts, payroll, settings and assistant history.
+          </p>
+          <table class="data">
+            <tbody>
+              ${orgs.map(o => `
+                <tr>
+                  <td>${esc(o.name)}${o.active ? ' <span class="org-current">current</span>' : ''}</td>
+                  <td class="btn-row" style="justify-content:flex-end">
+                    ${o.active ? '' : `<button class="btn small btn-org-switch" data-id="${esc(o.id)}">Switch</button>`}
+                    <button class="btn small danger btn-org-del" data-id="${esc(o.id)}" data-name="${esc(o.name)}">Delete</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          <button class="btn small" id="btn-org-new" style="margin-top:10px">+ New organisation</button>
+        </div>
         <div class="card">
           <h2>Invoice settings</h2>
           <form id="inv-form">
@@ -61,7 +83,8 @@ VIEWS.settingsView = async function (main) {
           <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0">
             Powers the chat bubble in the bottom-right corner. Your key is stored only in your
             local Ledgerly database and requests are sent directly to the endpoint you choose.
-            For a local model, run Ollama or LM Studio and pick "Local model".
+            Pick "Local model" to use Ollama or LM Studio — installed models are detected
+            automatically and the server is started in the background on first use.
           </p>
           <form id="ai-form-settings">
             <div class="field-row">
@@ -75,12 +98,18 @@ VIEWS.settingsView = async function (main) {
                   <option value="custom" ${s.ai_provider === 'custom' ? 'selected' : ''}>Custom (OpenAI-compatible)</option>
                 </select>
               </label>
-              <label class="field">Model<input name="ai_model" id="ai-model-inp" value="${esc(s.ai_model || '')}" placeholder="e.g. claude-sonnet-4-6" /></label>
+              <label class="field">Model<input name="ai_model" id="ai-model-inp" value="${esc(s.ai_model || '')}" placeholder="e.g. claude-sonnet-4-6" />
+                <span id="ai-model-local" style="display:none;gap:6px">
+                  <select id="ai-model-sel" style="flex:1"></select>
+                  <button class="btn small" type="button" id="ai-model-rescan" title="Rescan local models">↻</button>
+                </span>
+              </label>
             </div>
             <label class="field">Endpoint URL<input name="ai_base_url" id="ai-url-inp" value="${esc(s.ai_base_url || '')}" placeholder="auto-filled from provider" /></label>
             <div class="field-row">
               <label class="field">API key<input name="ai_api_key" type="password" value="${esc(s.ai_api_key || '')}" placeholder="not needed for most local models" /></label>
               <label class="field">Max response tokens<input name="ai_max_tokens" value="${esc(s.ai_max_tokens || '2048')}" style="max-width:130px" /></label>
+              <label class="field">Context length<input name="ai_context_length" value="${esc(s.ai_context_length || '8192')}" style="max-width:130px" title="Token window used when loading local models" /></label>
             </div>
             <div class="btn-row">
               <button class="btn primary" type="submit">Save AI settings</button>
@@ -110,6 +139,44 @@ VIEWS.settingsView = async function (main) {
       </div>
     </div>`;
 
+  // ----- organisations: switch / create / delete -----
+  document.querySelectorAll('.btn-org-switch').forEach(b => b.addEventListener('click', async () => {
+    try {
+      await window.ledgerly.orgs('switch', { id: b.dataset.id });
+      location.hash = '#/dashboard';
+      location.reload();
+    } catch (e) { showError(e); }
+  }));
+  document.getElementById('btn-org-new')?.addEventListener('click', () => {
+    location.hash = '#/setup?new=1';
+  });
+  document.querySelectorAll('.btn-org-del').forEach(b => b.addEventListener('click', () => {
+    const { id, name } = b.dataset;
+    const m = modal(`
+      <h2 style="color:var(--red)">Delete "${esc(name)}"?</h2>
+      <p><b>This is irreversible.</b> Every invoice, bill, contact, bank transaction,
+        payroll record, report and assistant conversation in this organisation will be
+        permanently destroyed. There is no undo and no recovery.</p>
+      <p>Type the organisation name to confirm:</p>
+      <input id="org-del-confirm" placeholder="${esc(name)}" autocomplete="off" style="width:100%" />
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn danger" id="org-del-go" disabled>Delete this organisation forever</button>
+        <button class="btn" id="org-del-cancel">Cancel</button>
+      </div>`);
+    const input = m.querySelector('#org-del-confirm');
+    const go = m.querySelector('#org-del-go');
+    input.addEventListener('input', () => { go.disabled = input.value.trim() !== name; });
+    input.focus();
+    m.querySelector('#org-del-cancel').addEventListener('click', closeModal);
+    go.addEventListener('click', async () => {
+      try {
+        await window.ledgerly.orgs('delete', { id, confirmName: input.value });
+        location.hash = '#/dashboard';
+        location.reload();
+      } catch (e) { showError(e); }
+    });
+  }));
+
   document.getElementById('org-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     try {
@@ -123,15 +190,57 @@ VIEWS.settingsView = async function (main) {
     anthropic: { url: 'https://api.anthropic.com', model: 'claude-sonnet-4-6' },
     openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o' },
     deepseek: { url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-    local: { url: 'http://localhost:11434/v1', model: 'llama3.1' },
+    local: { url: 'http://localhost:1234/v1', model: '' },
     custom: { url: '', model: '' },
   };
+
+  // Local provider: the text input is replaced by a dropdown of models
+  // auto-detected from Ollama / LM Studio. The dropdown writes into the
+  // (hidden) ai_model input so the form submit path stays unchanged.
+  const modelInp = document.getElementById('ai-model-inp');
+  const modelSel = document.getElementById('ai-model-sel');
+  const localWrap = document.getElementById('ai-model-local');
+  function applyLocalModelPick() {
+    const opt = modelSel.selectedOptions[0];
+    if (opt && opt.value) {
+      modelInp.value = opt.value;
+      document.getElementById('ai-url-inp').value = opt.dataset.url || '';
+    }
+  }
+  async function loadLocalModels() {
+    modelSel.innerHTML = '<option value="">Scanning…</option>';
+    try {
+      const r = await window.ledgerly.assistant('localModels');
+      if (!r.models.length) {
+        modelSel.innerHTML = '<option value="">No local models found — install Ollama or LM Studio</option>';
+        return;
+      }
+      const current = modelInp.value;
+      modelSel.innerHTML = r.models.map(m =>
+        `<option value="${esc(m.id)}" data-url="${esc(m.baseUrl)}" ${m.id === current ? 'selected' : ''}>` +
+        `${esc(m.id)} — ${esc(m.runtimeLabel)}</option>`).join('');
+      applyLocalModelPick();
+    } catch (e) {
+      modelSel.innerHTML = `<option value="">Scan failed: ${esc(e.message)}</option>`;
+    }
+  }
+  function syncLocalModelUI() {
+    const isLocal = document.getElementById('ai-provider-sel').value === 'local';
+    modelInp.style.display = isLocal ? 'none' : '';
+    localWrap.style.display = isLocal ? 'flex' : 'none';
+    if (isLocal) loadLocalModels();
+  }
+  modelSel.addEventListener('change', applyLocalModelPick);
+  document.getElementById('ai-model-rescan').addEventListener('click', loadLocalModels);
+  syncLocalModelUI();
+
   document.getElementById('ai-provider-sel').addEventListener('change', (ev) => {
     const p = AI_PRESETS[ev.target.value];
     if (p) {
       document.getElementById('ai-url-inp').value = p.url;
       document.getElementById('ai-model-inp').value = p.model;
     }
+    syncLocalModelUI();
   });
   document.getElementById('ai-form-settings').addEventListener('submit', async (ev) => {
     ev.preventDefault();

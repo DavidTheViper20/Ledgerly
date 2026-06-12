@@ -10,12 +10,13 @@
 
 const { getSetting, setSetting } = require('../db');
 const api = require('../api');
+const localAI = require('./local-ai');
 
 const PROVIDER_PRESETS = {
   anthropic: { baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-6', format: 'anthropic' },
   openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', format: 'openai' },
   deepseek: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', format: 'openai' },
-  local: { baseUrl: 'http://localhost:11434/v1', model: 'llama3.1', format: 'openai' },
+  local: { baseUrl: 'http://localhost:1234/v1', model: '', format: 'openai' },
   custom: { baseUrl: '', model: '', format: 'openai' },
 };
 
@@ -29,11 +30,17 @@ function aiConfig(db) {
     model: getSetting(db, 'ai_model') || preset.model,
     format: provider === 'anthropic' ? 'anthropic' : 'openai',
     maxTokens: parseInt(getSetting(db, 'ai_max_tokens') || '2048', 10),
+    contextLength: parseInt(getSetting(db, 'ai_context_length') || '8192', 10),
   };
 }
 
 // ---------- tools ----------
 // Provider-agnostic definitions, converted per wire format below.
+
+function withTimeout(promise, ms, what) {
+  return Promise.race([promise, new Promise((_, rej) =>
+    setTimeout(() => rej(new Error(`${what} timed out`)), ms))]);
+}
 
 const TOOLS = [
   {
@@ -140,6 +147,20 @@ const TOOLS = [
     run: (_db, a) => ({ expression: a.expression, result: safeCalc(a.expression) }),
   },
   {
+    name: 'web_search',
+    description: 'Search the live web. Use for legislation and law lookups, ATO / Fair Work rules, current rates and thresholds, or anything not stored in the ledger. Returns results with title, url and snippet. After searching, cite pages in your reply as markdown links, e.g. "I found it **[here](https://example.com/page)**".',
+    params: { query: { type: 'string', required: true } },
+    run: async (_db, a) => ({
+      results: await withTimeout(require('./web-search').searchWeb(String(a.query || '')), 60000, 'Web search'),
+    }),
+  },
+  {
+    name: 'read_webpage',
+    description: 'Open one web page (usually a web_search result) and return its readable text so you can quote specifics. Cite the page in your reply with a markdown link.',
+    params: { url: { type: 'string', required: true } },
+    run: async (_db, a) => withTimeout(require('./web-search').readPage(String(a.url || '')), 60000, 'Reading the page'),
+  },
+  {
     name: 'remember',
     description: 'Save a short note to your persistent memory. Use when the user tells you a preference or fact worth keeping (e.g. "always quote in USD for Acme"). Saved notes are shown to you in every future conversation.',
     params: { note: { type: 'string', required: true } },
@@ -190,11 +211,11 @@ function safeCalc(expr) {
   return st[0];
 }
 
-function executeTool(db, name, args) {
+async function executeTool(db, name, args) {
   const tool = TOOLS.find(t => t.name === name);
   if (!tool) return { error: `Unknown tool: ${name}` };
   try {
-    return tool.run(db, args || {});
+    return await tool.run(db, args || {});
   } catch (e) {
     return { error: e.message };
   }
@@ -235,6 +256,11 @@ Rules:
 - For Australian tax/legal questions (GST, BAS, PAYG, super, Fair Work, etc.) give
   accurate general information for Victoria/Australia where you can, and note that it is
   general information, not professional tax or legal advice.
+- For laws, legislation, rates, thresholds or anything current, use web_search (and
+  read_webpage for details). When you rely on a web page, link it inline in your reply
+  with markdown, e.g. "the test is set out **[here](https://www.legislation.gov.au/...)**".
+  Sources you consulted are listed automatically under your reply — you don't need to
+  repeat a full bibliography, just the inline links where they help.
 - Be concise and concrete. When you used tools, base your numbers on the tool results.
 - If the user asks you to create or change records, explain you are read-only for now
   and tell them exactly where in the app to do it themselves.
@@ -357,7 +383,122 @@ function openaiUserContent(text, atts) {
 
 const MAX_TOOL_ROUNDS = 6;
 
-async function runAnthropic(db, cfg, history, userText, atts, toolsUsed) {
+// Split a "<think>…</think> reply" string into its two channels. Models
+// without a thinking phase produce { think: '', reply: text }.
+function splitThink(text) {
+  const m = String(text).match(/^\s*<think>([\s\S]*?)(?:<\/think>([\s\S]*))?$/);
+  if (!m) return { think: '', reply: String(text) };
+  return { think: m[1], reply: m[2] ?? '' };
+}
+
+// Incremental router for streamed content: forwards deltas to onEvent as
+// either 'thinking' or 'reply', holding back characters that could be a
+// partially-received <think>/<\/think> tag boundary.
+function thinkRouter(onEvent) {
+  let raw = '', sentThink = 0, sentReply = 0;
+  const holdPartialTag = (s, tag) => {
+    for (let k = Math.min(tag.length - 1, s.length); k > 0; k--) {
+      if (tag.startsWith(s.slice(-k))) return s.slice(0, -k);
+    }
+    return s;
+  };
+  const emit = (final) => {
+    let { think, reply } = splitThink(raw);
+    if (!final) {
+      if (!raw.includes('</think>')) think = holdPartialTag(think, '</think>');
+      if (!raw.trimStart().startsWith('<think>')) reply = holdPartialTag(reply, '<think>');
+    }
+    if (think.length > sentThink) { onEvent?.({ type: 'thinking', text: think.slice(sentThink) }); sentThink = think.length; }
+    if (reply.length > sentReply) { onEvent?.({ type: 'reply', text: reply.slice(sentReply) }); sentReply = reply.length; }
+  };
+  return {
+    push(chunk) { raw += chunk; emit(false); },
+    flush() { emit(true); },
+    raw: () => raw,
+    reply: () => splitThink(raw).reply,
+  };
+}
+
+// One OpenAI-format request. Streams via SSE when ctx.onEvent is set (and
+// the server actually answers with an event stream — a plain JSON response
+// is accepted too, so mocks and non-streaming servers keep working).
+// Returns { raw: assistantMessage, reply, toolCalls }.
+async function openaiRound(db, cfg, headers, messages, ctx) {
+  const body = {
+    model: cfg.model, max_tokens: cfg.maxTokens, tools: toolsForOpenAI(), messages,
+    ...(ctx.onEvent ? { stream: true } : {}),
+  };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 300000);
+  try {
+    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let json; try { json = JSON.parse(text); } catch { json = null; }
+      throw new Error(`AI provider error (${res.status}): ${json?.error?.message || json?.message || text.slice(0, 300)}`);
+    }
+    const ctype = res.headers.get('content-type') || '';
+    if (!body.stream || !ctype.includes('event-stream')) {
+      const msg = (await res.json()).choices?.[0]?.message;
+      if (!msg) throw new Error('Malformed response from AI provider');
+      const { think, reply } = splitThink(msg.content || '');
+      if (think) ctx.onEvent?.({ type: 'thinking', text: think });
+      if (reply && !(msg.tool_calls || []).length) ctx.onEvent?.({ type: 'reply', text: reply });
+      return { raw: msg, reply, toolCalls: msg.tool_calls || [] };
+    }
+    const router = thinkRouter(ctx.onEvent);
+    const toolCalls = [];
+    const decoder = new TextDecoder();
+    let buf = '';
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let j; try { j = JSON.parse(payload); } catch { continue; }
+        const d = j.choices?.[0]?.delta || {};
+        if (d.reasoning_content) ctx.onEvent?.({ type: 'thinking', text: d.reasoning_content });
+        if (d.content) router.push(d.content);
+        for (const tc of d.tool_calls || []) {
+          const i = tc.index ?? 0;
+          toolCalls[i] = toolCalls[i] || { id: tc.id || `tc${i}`, type: 'function', function: { name: '', arguments: '' } };
+          if (tc.id) toolCalls[i].id = tc.id;
+          if (tc.function?.name) toolCalls[i].function.name += tc.function.name;
+          if (tc.function?.arguments) toolCalls[i].function.arguments += tc.function.arguments;
+        }
+      }
+    }
+    router.flush();
+    const calls = toolCalls.filter(Boolean);
+    const raw = { role: 'assistant', content: router.raw() || null, ...(calls.length ? { tool_calls: calls } : {}) };
+    return { raw, reply: router.reply(), toolCalls: calls };
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('AI request timed out');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runToolCall(db, name, args, ctx) {
+  ctx.toolsUsed.push(name);
+  ctx.onEvent?.({ type: 'tool', name });
+  const out = await executeTool(db, name, args);
+  if (name === 'web_search' && Array.isArray(out?.results)) ctx.sources.push(...out.results);
+  if (name === 'read_webpage' && out?.url) ctx.sources.push({ title: out.title || out.url, url: out.url });
+  return out;
+}
+
+async function runAnthropic(db, cfg, history, userText, atts, ctx) {
   if (!cfg.apiKey) throw new Error('Set your Anthropic API key in Settings → AI assistant');
   const messages = history.map(m => ({ role: m.role, content: m.content }));
   messages.push({ role: 'user', content: anthropicUserContent(userText, atts) });
@@ -369,40 +510,37 @@ async function runAnthropic(db, cfg, history, userText, atts, toolsUsed) {
     });
     const toolUses = (res.content || []).filter(b => b.type === 'tool_use');
     if (!toolUses.length || res.stop_reason !== 'tool_use') {
-      return (res.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim()
+      const reply = (res.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim()
         || '(The model returned an empty response.)';
+      ctx.onEvent?.({ type: 'reply', text: reply });
+      return reply;
     }
     messages.push({ role: 'assistant', content: res.content });
-    const results = toolUses.map(tu => {
-      toolsUsed.push(tu.name);
-      const out = executeTool(db, tu.name, tu.input);
-      return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(out).slice(0, 30000) };
-    });
+    const results = [];
+    for (const tu of toolUses) {
+      const out = await runToolCall(db, tu.name, tu.input, ctx);
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(out).slice(0, 30000) });
+    }
     messages.push({ role: 'user', content: results });
   }
   throw new Error('The assistant used too many tool calls in one turn');
 }
 
-async function runOpenAI(db, cfg, history, userText, atts, toolsUsed) {
+async function runOpenAI(db, cfg, history, userText, atts, ctx) {
   const messages = [{ role: 'system', content: buildSystemPrompt(db) }];
   for (const m of history) messages.push({ role: m.role, content: m.content });
   messages.push({ role: 'user', content: openaiUserContent(userText, atts) });
   const headers = cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {};
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    const res = await httpJson(`${cfg.baseUrl}/chat/completions`, headers, {
-      model: cfg.model, max_tokens: cfg.maxTokens, tools: toolsForOpenAI(), messages,
-    });
-    const msg = res.choices?.[0]?.message;
-    if (!msg) throw new Error('Malformed response from AI provider');
-    if (!msg.tool_calls || !msg.tool_calls.length) {
-      return (msg.content || '').trim() || '(The model returned an empty response.)';
+    const r = await openaiRound(db, cfg, headers, messages, ctx);
+    if (!r.toolCalls.length) {
+      return (r.reply || '').trim() || '(The model returned an empty response.)';
     }
-    messages.push(msg);
-    for (const tc of msg.tool_calls) {
-      toolsUsed.push(tc.function.name);
+    messages.push(r.raw);
+    for (const tc of r.toolCalls) {
       let args = {};
       try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
-      const out = executeTool(db, tc.function.name, args);
+      const out = await runToolCall(db, tc.function.name, args, ctx);
       messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(out).slice(0, 30000) });
     }
   }
@@ -412,7 +550,7 @@ async function runOpenAI(db, cfg, history, userText, atts, toolsUsed) {
 // ---------- public API ----------
 
 function history(db, limit = 60) {
-  return db.prepare('SELECT id, role, content, tools_used, created_at FROM chat_messages ORDER BY id DESC LIMIT ?')
+  return db.prepare('SELECT id, role, content, tools_used, sources, created_at FROM chat_messages ORDER BY id DESC LIMIT ?')
     .all(limit).reverse();
 }
 
@@ -430,30 +568,39 @@ function forget(db, id) {
   return { ok: true };
 }
 
-async function chat(db, { message, attachments = [] }) {
+async function chat(db, { message, attachments = [] }, onEvent = null) {
   const cfg = aiConfig(db);
   if (!cfg.provider) throw new Error('Choose an AI provider in Settings → AI assistant first');
   if (!cfg.baseUrl) throw new Error('Set the AI endpoint URL in Settings → AI assistant');
   if (!cfg.model) throw new Error('Set the model name in Settings → AI assistant');
   if (!message && !attachments.length) throw new Error('Type a message first');
+  if (cfg.provider === 'local') {
+    await localAI.ensureRunning(cfg.baseUrl, (label) => onEvent?.({ type: 'status', label }));
+    await localAI.ensureModelLoaded(cfg.baseUrl, cfg.model, cfg.contextLength,
+      (label) => onEvent?.({ type: 'status', label }));
+  }
 
   // Last 16 stored turns become plain-text context.
   const hist = history(db, 16).map(m => ({ role: m.role, content: m.content }));
-  const toolsUsed = [];
+  const ctx = { toolsUsed: [], sources: [], onEvent };
   const reply = cfg.format === 'anthropic'
-    ? await runAnthropic(db, cfg, hist, message, attachments, toolsUsed)
-    : await runOpenAI(db, cfg, hist, message, attachments, toolsUsed);
+    ? await runAnthropic(db, cfg, hist, message, attachments, ctx)
+    : await runOpenAI(db, cfg, hist, message, attachments, ctx);
 
+  // De-dupe sources by URL, keep first occurrence.
+  const seen = new Set();
+  const sources = ctx.sources.filter(s => s?.url && !seen.has(s.url) && seen.add(s.url));
   db.prepare('INSERT INTO chat_messages (role, content) VALUES (?, ?)')
     .run('user', (message || '') + attachmentNote(attachments));
-  db.prepare('INSERT INTO chat_messages (role, content, tools_used) VALUES (?, ?, ?)')
-    .run('assistant', reply, JSON.stringify([...new Set(toolsUsed)]));
-  return { reply, toolsUsed: [...new Set(toolsUsed)] };
+  db.prepare('INSERT INTO chat_messages (role, content, tools_used, sources) VALUES (?, ?, ?, ?)')
+    .run('assistant', reply, JSON.stringify([...new Set(ctx.toolsUsed)]), JSON.stringify(sources));
+  return { reply, toolsUsed: [...new Set(ctx.toolsUsed)], sources };
 }
 
 async function testConnection(db) {
   const cfg = aiConfig(db);
   if (!cfg.provider || !cfg.baseUrl || !cfg.model) throw new Error('Fill in provider, endpoint and model first');
+  if (cfg.provider === 'local') await localAI.ensureRunning(cfg.baseUrl);
   if (cfg.format === 'anthropic') {
     const res = await httpJson(`${cfg.baseUrl}/v1/messages`,
       { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
@@ -469,4 +616,5 @@ async function testConnection(db) {
 module.exports = {
   chat, history, clearHistory, memories, forget, testConnection,
   aiConfig, PROVIDER_PRESETS, executeTool, safeCalc, TOOLS, buildSystemPrompt,
+  localModels: localAI.detect,
 };
