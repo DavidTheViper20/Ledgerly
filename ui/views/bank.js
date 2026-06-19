@@ -357,6 +357,14 @@ VIEWS.reconcile = async function (main, params) {
 
   function recPairHtml(s, allTx, contacts) {
     const top = s.suggestions[0];
+    const rule = (s.ruleSuggestions || [])[0];
+    const defaultMode = top ? 'match' : (rule ? 'rule' : 'create');
+    const otherBanks = banks.filter(x => x.id !== id);
+    const amountAbs = dollarsOf(Math.abs(s.amount_cents));
+    const paneAttr = (mode) => mode === defaultMode ? '' : 'hidden';
+    const tabClass = (mode, extra = '') => `${extra} rec-tab ${mode === defaultMode ? 'active' : ''}`.trim();
+    const okMode = defaultMode === 'match' ? '' : `data-mode="${defaultMode}"`;
+    const ruleDescription = rule ? (rule.description || s.description || s.payee || 'Bank transaction') : '';
     return `
     <div class="rec-pair" data-sid="${s.id}">
       <div class="rec-side statement">
@@ -369,21 +377,24 @@ VIEWS.reconcile = async function (main, params) {
         </div>
       </div>
       <div class="rec-mid">
-        <button class="rec-ok" title="Reconcile" ${top ? '' : 'data-mode="create"'}>OK</button>
+        <button class="rec-ok" title="Reconcile" ${okMode}>OK</button>
       </div>
       <div class="rec-side app">
         <div class="rec-tabs">
-          <button class="t-match ${top ? 'active' : ''}">Match</button>
-          <button class="t-create ${top ? '' : 'active'}">Create</button>
+          <button class="${tabClass('match', 't-match')}" data-mode="match">Match</button>
+          <button class="${tabClass('create', 't-create')}" data-mode="create">Create</button>
+          <button class="${tabClass('transfer', 't-transfer')}" data-mode="transfer">Transfer</button>
+          <button class="${tabClass('split', 't-split')}" data-mode="split">Split</button>
+          <button class="${tabClass('rule', 't-rule')}" data-mode="rule" ${rule ? '' : 'disabled'}>Rule</button>
         </div>
-        <div class="pane-match" ${top ? '' : 'hidden'}>
+        <div class="rec-pane pane-match" data-mode="match" ${paneAttr('match')}>
           ${s.suggestions.length ? `
             <select class="sel-match" style="width:100%;padding:7px;border:1px solid var(--line);border-radius:6px">
               ${s.suggestions.map((g, i) => `<option value="${g.kind}|${g.id}|${g.direction || ''}" ${i === 0 ? 'selected' : ''}>
-                ${esc(g.description)} · ${fmtDate(g.date)} · ${fmtMoney(g.amount_cents)}</option>`).join('')}
+                ${esc(g.description)} · ${fmtDate(g.date)} · ${fmtMoney(g.amount_cents)} · ${g.score || 0} · ${esc((g.reasons || []).join(', '))}</option>`).join('')}
             </select>` : '<div class="rec-line2">No matching transaction found — use Create.</div>'}
         </div>
-        <div class="pane-create" ${top ? 'hidden' : ''}>
+        <div class="rec-pane pane-create" data-mode="create" ${paneAttr('create')}>
           <div class="field-row">
             <label class="field" style="margin-bottom:4px">Who
               <select class="cr-contact">${contactOptions(contacts, null)}</select>
@@ -396,25 +407,57 @@ VIEWS.reconcile = async function (main, params) {
             </label>
           </div>
         </div>
+        <div class="rec-pane pane-transfer" data-mode="transfer" ${paneAttr('transfer')}>
+          <div class="field-row">
+            <label class="field" style="margin-bottom:4px">Bank account
+              <select class="tr-bank">${otherBanks.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+            </label>
+            <label class="field" style="margin-bottom:4px">Reference
+              <input class="tr-ref" value="${esc(s.reference || s.description || s.payee || '')}" />
+            </label>
+          </div>
+        </div>
+        <div class="rec-pane pane-split" data-mode="split" ${paneAttr('split')}>
+          ${[0, 1].map(i => `
+            <div class="field-row split-row">
+              <label class="field" style="margin-bottom:4px">Account
+                <select class="sp-account">${accountOptions(null, { filter: 'nonbank' })}</select>
+              </label>
+              <label class="field" style="margin-bottom:4px">Description
+                <input class="sp-desc" value="${i === 0 ? esc(s.description || s.payee || '') : ''}" />
+              </label>
+              <label class="field" style="margin-bottom:4px">Amount
+                <input class="sp-amount" value="${i === 0 ? amountAbs : ''}" />
+              </label>
+              <label class="field" style="margin-bottom:4px">Tax
+                <select class="sp-tax">${taxOptions(null)}</select>
+              </label>
+            </div>`).join('')}
+        </div>
+        <div class="rec-pane pane-rule" data-mode="rule" ${paneAttr('rule')}>
+          ${rule ? `
+            <div class="rule-suggestion"
+              data-contact-id="${rule.contact_id || ''}"
+              data-account-id="${rule.account_id || ''}"
+              data-tax-rate-id="${rule.tax_rate_id || ''}"
+              data-description="${esc(ruleDescription)}">
+              <div style="font-weight:700">${esc(rule.name)}</div>
+              <div class="rec-line2">${esc(ruleDescription)}</div>
+            </div>` : '<div class="rec-line2">No rule suggestion for this line.</div>'}
+        </div>
       </div>
     </div>`;
   }
 
-  on(main, '.t-match', 'click', (ev) => {
+  on(main, '.rec-tab', 'click', (ev) => {
+    if (ev.target.disabled) return;
     const pair = ev.target.closest('.rec-pair');
-    pair.querySelector('.t-match').classList.add('active');
-    pair.querySelector('.t-create').classList.remove('active');
-    pair.querySelector('.pane-match').hidden = false;
-    pair.querySelector('.pane-create').hidden = true;
-    pair.querySelector('.rec-ok').removeAttribute('data-mode');
-  });
-  on(main, '.t-create', 'click', (ev) => {
-    const pair = ev.target.closest('.rec-pair');
-    pair.querySelector('.t-create').classList.add('active');
-    pair.querySelector('.t-match').classList.remove('active');
-    pair.querySelector('.pane-match').hidden = true;
-    pair.querySelector('.pane-create').hidden = false;
-    pair.querySelector('.rec-ok').setAttribute('data-mode', 'create');
+    const mode = ev.target.dataset.mode;
+    pair.querySelectorAll('.rec-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
+    pair.querySelectorAll('.rec-pane').forEach(pane => { pane.hidden = pane.dataset.mode !== mode; });
+    const ok = pair.querySelector('.rec-ok');
+    if (mode === 'match') ok.removeAttribute('data-mode');
+    else ok.setAttribute('data-mode', mode);
   });
 
   on(main, '.btn-del-sl', 'click', async (ev) => {
@@ -426,14 +469,14 @@ VIEWS.reconcile = async function (main, params) {
   on(main, '.rec-ok', 'click', async (ev) => {
     const pair = ev.target.closest('.rec-pair');
     const sid = Number(pair.dataset.sid);
-    const mode = ev.target.dataset.mode === 'create' ? 'create' : 'match';
+    const mode = ev.target.dataset.mode || 'match';
     try {
       if (mode === 'match') {
         const sel = pair.querySelector('.sel-match');
         if (!sel) return toast('No match available — use Create', 'error');
         const [kind, mid, direction] = sel.value.split('|');
         await api('bank.match', { statementLineId: sid, kind, id: Number(mid), direction: direction || null });
-      } else {
+      } else if (mode === 'create') {
         const accountId = Number(pair.querySelector('.cr-account').value);
         if (!accountId) return toast('Choose an account to code this to', 'error');
         await api('bank.createAndMatch', {
@@ -441,6 +484,36 @@ VIEWS.reconcile = async function (main, params) {
           contactId: Number(pair.querySelector('.cr-contact').value) || null,
           accountId,
           taxRateId: Number(pair.querySelector('.cr-tax').value) || null,
+        });
+      } else if (mode === 'transfer') {
+        const otherBankAccountId = Number(pair.querySelector('.tr-bank').value);
+        if (!otherBankAccountId) return toast('Choose another bank account', 'error');
+        await api('bank.createTransferAndMatch', {
+          statementLineId: sid,
+          otherBankAccountId,
+          reference: pair.querySelector('.tr-ref').value.trim(),
+        });
+      } else if (mode === 'split') {
+        const lines = [...pair.querySelectorAll('.split-row')].map(row => ({
+          description: row.querySelector('.sp-desc').value.trim(),
+          amountCents: centsOf(row.querySelector('.sp-amount').value),
+          accountId: Number(row.querySelector('.sp-account').value),
+          taxRateId: Number(row.querySelector('.sp-tax').value) || null,
+        })).filter(line => line.amountCents || line.description || line.accountId);
+        if (!lines.length) return toast('Add at least one split line', 'error');
+        if (lines.some(line => !line.accountId || !line.amountCents)) return toast('Each split line needs an account and amount', 'error');
+        await api('bank.createSplitAndMatch', { statementLineId: sid, taxMode: 'none', lines });
+      } else if (mode === 'rule') {
+        const ruleEl = pair.querySelector('.rule-suggestion');
+        if (!ruleEl) return toast('No rule suggestion for this line', 'error');
+        const accountId = Number(ruleEl.dataset.accountId);
+        if (!accountId) return toast('Rule needs an account', 'error');
+        await api('bank.createAndMatch', {
+          statementLineId: sid,
+          contactId: Number(ruleEl.dataset.contactId) || null,
+          accountId,
+          taxRateId: Number(ruleEl.dataset.taxRateId) || null,
+          description: ruleEl.dataset.description || '',
         });
       }
       toast('Reconciled ✓', 'success');
