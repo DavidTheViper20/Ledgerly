@@ -297,6 +297,7 @@ const METHODS = {
   'bank.reconcileData': (db, a) => bank.reconcileData(db, a.bankAccountId),
   'bank.match': (db, a) => bank.matchStatementLine(db, a),
   'bank.createAndMatch': (db, a) => bank.createAndMatch(db, a),
+  'bank.createTransferAndMatch': (db, a) => bank.createTransferAndMatch(db, a),
   'bank.unreconcile': (db, a) => bank.unreconcile(db, a.statementLineId),
   'bank.reconciliationHistory': (db, a) => bank.reconciliationHistory(db, a.statementLineId),
   'bank.rules.list': (db) => require('./services/reconciliation/rules').listRules(db),

@@ -124,3 +124,29 @@ test('bank rules: matching rule returns create suggestion without posting a jour
   assert.equal(line.ruleSuggestions[0].account_id, env.rent.id);
   assert.equal(call('journals.list', { manualOnly: false }).length, 0);
 });
+
+test('reconciliation transfer: creates transfer from money-out statement line and marks source side reconciled', () => {
+  const env = setup();
+  const savings = call('bank.createAccount', { name: 'Savings', code: '094' });
+  call('bank.importStatement', {
+    bankAccountId: env.bank.id,
+    csv: 'Date,Description,Amount\n2026-06-05,Transfer to savings,-250.00\n',
+  });
+  const line = call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines[0];
+
+  const transfer = call('bank.createTransferAndMatch', {
+    statementLineId: line.id,
+    otherBankAccountId: savings.id,
+    reference: 'Transfer to savings',
+  });
+  assert.equal(transfer.from_account_id, env.bank.id);
+  assert.equal(transfer.to_account_id, savings.id);
+  assert.equal(transfer.amount_cents, 25000);
+  assert.equal(transfer.from_reconciled, 1);
+  assert.equal(transfer.to_reconciled, 0);
+
+  const banks = call('bank.accounts');
+  assert.equal(banks.find(b => b.id === env.bank.id).balance_cents, -25000);
+  assert.equal(banks.find(b => b.id === savings.id).balance_cents, 25000);
+  assert.equal(call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines.length, 0);
+});

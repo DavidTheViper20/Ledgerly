@@ -413,6 +413,28 @@ function createAndMatch(db, { statementLineId, contactId = null, accountId, taxR
   });
 }
 
+function createTransferAndMatch(db, { statementLineId, otherBankAccountId, reference = '' }) {
+  const sl = db.prepare('SELECT * FROM statement_lines WHERE id = ?').get(statementLineId);
+  if (!sl) throw new Error('Statement line not found');
+  if (sl.status === 'MATCHED') throw new Error('Already reconciled');
+  const moneyOut = sl.amount_cents < 0;
+  const transfer = saveTransfer(db, {
+    fromAccountId: moneyOut ? sl.bank_account_id : otherBankAccountId,
+    toAccountId: moneyOut ? otherBankAccountId : sl.bank_account_id,
+    date: sl.date,
+    amountCents: Math.abs(sl.amount_cents),
+    reference: reference || sl.reference || sl.description || sl.payee || 'Bank transfer',
+  });
+  matchStatementLine(db, {
+    statementLineId,
+    kind: 'transfer',
+    id: transfer.id,
+    direction: moneyOut ? 'out' : 'in',
+    action: 'created_transfer',
+  });
+  return db.prepare('SELECT * FROM transfers WHERE id=?').get(transfer.id);
+}
+
 function unreconcile(db, statementLineId) {
   const sl = db.prepare('SELECT * FROM statement_lines WHERE id = ?').get(statementLineId);
   if (!sl || sl.status !== 'MATCHED') throw new Error('Line is not reconciled');
@@ -428,5 +450,6 @@ function unreconcile(db, statementLineId) {
 module.exports = {
   listBankAccounts, createBankAccount, saveBankTransaction, getBankTransaction, deleteBankTransaction,
   saveTransfer, listAccountTransactions, importStatement, importFeedTransactions, addStatementLine, deleteStatementLine,
-  reconcileData, matchStatementLine, createAndMatch, unreconcile, reconciliationHistory, parseCsv, normaliseDate,
+  reconcileData, matchStatementLine, createAndMatch, createTransferAndMatch, unreconcile, reconciliationHistory,
+  parseCsv, normaliseDate,
 };
