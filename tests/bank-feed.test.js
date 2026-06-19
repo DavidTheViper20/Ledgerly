@@ -59,3 +59,18 @@ test('bank feed import: inserts provider metadata and dedupes source transaction
   assert.equal(lines[0].posted_at, '2026-06-01T10:00:00Z');
   assert.match(lines[0].raw_json, /office/);
 });
+
+test('bank feed sync: fake provider normalizes transactions and imports statement lines', async () => {
+  const bank = setupBank();
+  const result = await require('../src/services/bank-feed/fake-provider').sync(db, {
+    bankAccountId: bank.id,
+    providerAccountId: 'fake-cheque',
+  });
+  assert.equal(result.imported, 2);
+  assert.equal(result.skipped, 0);
+  const lines = call('bank.reconcileData', { bankAccountId: bank.id }).statementLines;
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].source_provider, 'fake');
+  assert.ok(lines.some(l => l.amount_cents < 0));
+  assert.ok(lines.some(l => l.amount_cents > 0));
+});
