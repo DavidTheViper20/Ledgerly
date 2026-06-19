@@ -14,7 +14,7 @@
 
 Implementation must happen only in this copied app:
 
-`/Users/davidnaguib/Desktop/Ledgerly-bank-feeds`
+`/Volumes/1tb/Ledgerly-bank-feeds`
 
 Do not edit the backup app:
 
@@ -23,7 +23,7 @@ Do not edit the backup app:
 Start every implementation session with:
 
 ```bash
-cd /Users/davidnaguib/Desktop/Ledgerly-bank-feeds
+cd /Volumes/1tb/Ledgerly-bank-feeds
 git status --short
 npm test
 ```
@@ -51,44 +51,64 @@ If baseline tests fail before any task work, stop and investigate the copied app
 - Dedupe must happen at the statement-line import boundary.
 - Reconciliation actions must be reversible by `bank.unreconcile`.
 
+## Product TODO: Xero-Equivalent Workflow
+
+The implementation target is a Xero-style reconciliation workflow. Where Xero's public behavior and Ledgerly's safety requirements differ, prefer the safer recommendation: read-only feeds, explicit user confirmation before ledger changes, durable audit history, and no bank-provider secrets in the Electron app.
+
+- [ ] Bank feed, CSV import, and manual entry all create `statement_lines`; they do not directly post journals.
+- [ ] Bank feed connections are read-only. Ledgerly must never use bank-linking credentials or provider APIs to initiate payments.
+- [ ] Each unreconciled statement line appears in a reconcile queue for one bank account.
+- [ ] The reconcile queue suggests existing payments, bank transactions, and transfers using amount, date, reference, payee, and contact similarity.
+- [ ] A user can confirm a suggested match with a single OK-style action.
+- [ ] A user can create a spend-money or receive-money transaction from a statement line.
+- [ ] A user can create a bank transfer from a statement line and reconcile the relevant side.
+- [ ] A user can split one statement line across multiple accounts and tax treatments.
+- [ ] Bank rules can suggest coding for recurring statement lines, but the first implementation should require user confirmation before posting.
+- [ ] Duplicate provider transactions are skipped through stable provider transaction IDs.
+- [ ] Reconciliation creates an audit record showing the statement line, matched object, action, and reconciliation time.
+- [ ] Unreconcile reopens the statement line and reverses only the reconciliation link, not unrelated accounting history.
+- [ ] Reports remain journal-driven and should not read unreconciled bank feed lines as accounting truth.
+- [ ] The first live provider path should be Basiq-compatible, but the core reconciliation code must stay provider-neutral.
+- [ ] The user-visible result should feel like Xero: bank lines arrive, Ledgerly proposes matches or rules, the user confirms, and the books update only after confirmation.
+
 ## File Structure
 
 Existing files to modify:
 
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js`
   - Schema additions and idempotent migrations.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
   - Statement imports, reconciliation actions, split support, transfer support, rule application, audit writes.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`
   - Register new synchronous bank/reconciliation APIs.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js`
   - Add async `bank-feed` IPC after provider-neutral services exist.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/preload.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/electron/preload.js`
   - Expose `window.ledgerly.bankFeed(method, args)`.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/ui/views/bank.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/ui/views/bank.js`
   - Upgrade bank account and reconcile screens.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/scripts/run-smoke.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/scripts/run-smoke.js`
   - Keep existing runner; add routes/interactions only if smoke coverage needs hooks.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js`
   - Add smoke route visits for new screens after UI tasks.
 
 New files to create:
 
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/reconciliation/matcher.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/reconciliation/matcher.js`
   - Deterministic match scoring and reason generation.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/reconciliation/rules.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/reconciliation/rules.js`
   - Rule matching and draft action creation.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/normalise.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/normalise.js`
   - Provider-neutral feed transaction normalization.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/importer.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/importer.js`
   - Imports normalized feed transactions into `statement_lines`.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/fake-provider.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/fake-provider.js`
   - Deterministic test provider.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/basiq.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/basiq.js`
   - Basiq client adapter.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
   - Core reconciliation behavior tests.
-- `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js`
+- `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js`
   - Provider-neutral and fake-provider feed tests.
 
 ## Phase 1: Statement Line Metadata And Dedupe
@@ -96,13 +116,13 @@ New files to create:
 ### Task 1: Add Xero-Style Source Metadata To Statement Lines
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js`
 
 - [ ] **Step 1: Add failing tests for source metadata and dedupe**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js` with:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js` with:
 
 ```js
 'use strict';
@@ -185,7 +205,7 @@ Unknown method: bank.importFeedTransactions
 
 - [ ] **Step 3: Add schema columns and unique dedupe index**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js`, extend `migrate(db)`:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js`, extend `migrate(db)`:
 
 ```js
   ensureColumn(db, 'statement_lines', 'source_kind', "TEXT NOT NULL DEFAULT 'manual'");
@@ -203,7 +223,7 @@ Also update `SCHEMA` table definition for fresh databases by adding the same col
 
 - [ ] **Step 4: Add feed import function**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`, add:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`, add:
 
 ```js
 function importFeedTransactions(db, { bankAccountId, transactions = [] }) {
@@ -248,7 +268,7 @@ Then export it from `module.exports`.
 
 - [ ] **Step 5: Register API method**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`, add near the existing bank methods:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`, add near the existing bank methods:
 
 ```js
   'bank.importFeedTransactions': (db, a) => bank.importFeedTransactions(db, a),
@@ -284,13 +304,13 @@ git commit -m "feat: add statement source metadata"
 ### Task 2: Add Durable Reconciliation Records
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
 
 - [ ] **Step 1: Add failing reconciliation audit tests**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js` with:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js` with:
 
 ```js
 'use strict';
@@ -362,7 +382,7 @@ Unknown method: bank.reconciliationHistory
 
 - [ ] **Step 3: Add reconciliation table**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js`, add to `SCHEMA`:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js`, add to `SCHEMA`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS reconciliations (
@@ -381,7 +401,7 @@ CREATE INDEX IF NOT EXISTS idx_reconciliations_statement ON reconciliations(stat
 
 - [ ] **Step 4: Write audit helper functions**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`, add helpers:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`, add helpers:
 
 ```js
 function recordReconciliation(db, { statementLineId, matchedKind, matchedId, action, note = '' }) {
@@ -435,7 +455,7 @@ In `unreconcile`, before returning:
 
 - [ ] **Step 6: Register API method**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`, add:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`, add:
 
 ```js
   'bank.reconciliationHistory': (db, a) => bank.reconciliationHistory(db, a.statementLineId),
@@ -471,9 +491,9 @@ git commit -m "feat: audit bank reconciliations"
 ### Task 3: Extract And Improve Match Suggestions
 
 **Files:**
-- Create: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/reconciliation/matcher.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- Create: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/reconciliation/matcher.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
 
 - [ ] **Step 1: Add failing scoring tests**
 
@@ -532,7 +552,7 @@ score/reasons missing or lower-quality match ranked first
 
 - [ ] **Step 3: Create matcher module**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/reconciliation/matcher.js`:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/src/services/reconciliation/matcher.js`:
 
 ```js
 'use strict';
@@ -603,7 +623,7 @@ module.exports = { scoreCandidate, suggestMatches };
 
 - [ ] **Step 4: Wire matcher into `reconcileData`**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`, import:
+In `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`, import:
 
 ```js
 const { suggestMatches } = require('./reconciliation/matcher');
@@ -645,11 +665,11 @@ git commit -m "feat: score bank reconciliation matches"
 ### Task 4: Add Rule-Based Create Suggestions
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js`
-- Create: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/reconciliation/rules.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js`
+- Create: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/reconciliation/rules.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
 
 - [ ] **Step 1: Add failing rule tests**
 
@@ -698,7 +718,7 @@ Unknown method: bank.rules.save
 
 - [ ] **Step 3: Add `bank_rules` schema**
 
-Add to `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/db.js` `SCHEMA`:
+Add to `/Volumes/1tb/Ledgerly-bank-feeds/src/db.js` `SCHEMA`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS bank_rules (
@@ -721,7 +741,7 @@ CREATE TABLE IF NOT EXISTS bank_rules (
 
 - [ ] **Step 4: Implement rule module**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/reconciliation/rules.js`:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/src/services/reconciliation/rules.js`:
 
 ```js
 'use strict';
@@ -845,9 +865,9 @@ git commit -m "feat: add bank reconciliation rules"
 ### Task 5: Create Transfers Directly From Statement Lines
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
 
 - [ ] **Step 1: Add failing transfer action test**
 
@@ -956,9 +976,9 @@ git commit -m "feat: reconcile bank transfers from statement lines"
 ### Task 6: Split One Statement Line Across Multiple Accounts
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
 
 - [ ] **Step 1: Add failing split test**
 
@@ -1090,11 +1110,11 @@ git commit -m "feat: reconcile split bank transactions"
 ### Task 7: Normalize And Import Provider Feed Transactions
 
 **Files:**
-- Create: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/normalise.js`
-- Create: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/importer.js`
-- Create: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/fake-provider.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/api.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js`
+- Create: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/normalise.js`
+- Create: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/importer.js`
+- Create: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/fake-provider.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/src/api.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js`
 
 - [ ] **Step 1: Add fake provider sync test**
 
@@ -1134,7 +1154,7 @@ Cannot find module '../src/services/bank-feed/fake-provider'
 
 - [ ] **Step 3: Create normalizer**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/normalise.js`:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/normalise.js`:
 
 ```js
 'use strict';
@@ -1164,7 +1184,7 @@ module.exports = { normalizeFeedTransaction };
 
 - [ ] **Step 4: Create importer**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/importer.js`:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/importer.js`:
 
 ```js
 'use strict';
@@ -1182,7 +1202,7 @@ module.exports = { importProviderTransactions };
 
 - [ ] **Step 5: Create fake provider**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/fake-provider.js`:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/fake-provider.js`:
 
 ```js
 'use strict';
@@ -1253,9 +1273,9 @@ git commit -m "feat: add provider-neutral bank feed importer"
 ### Task 8: Add Async IPC Boundary Without Changing Existing `api.call`
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/preload.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/electron/preload.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js`
 
 - [ ] **Step 1: Keep core tests green before Electron IPC work**
 
@@ -1273,7 +1293,7 @@ PASS all test files
 
 - [ ] **Step 2: Add preload bridge**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/preload.js`, add inside `contextBridge.exposeInMainWorld('ledgerly', { ... })`:
+In `/Volumes/1tb/Ledgerly-bank-feeds/electron/preload.js`, add inside `contextBridge.exposeInMainWorld('ledgerly', { ... })`:
 
 ```js
   async bankFeed(method, args) {
@@ -1285,7 +1305,7 @@ In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/preload.js`, add ins
 
 - [ ] **Step 3: Add main-process method registry**
 
-In `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js`, after assistant IPC setup, add:
+In `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js`, after assistant IPC setup, add:
 
 ```js
   const BANK_FEED_METHODS = {
@@ -1346,10 +1366,10 @@ git commit -m "feat: add async bank feed IPC"
 ### Task 9: Add Basiq Client Behind Provider Interface
 
 **Files:**
-- Create: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/basiq.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/ui/views/settings.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js`
+- Create: `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/basiq.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/ui/views/settings.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js`
 
 - [ ] **Step 1: Add Basiq mapping unit test using fixture data**
 
@@ -1392,7 +1412,7 @@ Cannot find module '../src/services/bank-feed/basiq'
 
 - [ ] **Step 3: Implement Basiq mapping and client shell**
 
-Create `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/src/services/bank-feed/basiq.js`:
+Create `/Volumes/1tb/Ledgerly-bank-feeds/src/services/bank-feed/basiq.js`:
 
 ```js
 'use strict';
@@ -1518,8 +1538,8 @@ git commit -m "feat: add Basiq bank feed adapter"
 ### Task 10: Upgrade The Bank Reconcile Screen
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/ui/views/bank.js`
-- Test: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js` smoke route interactions if needed.
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/ui/views/bank.js`
+- Test: `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js` smoke route interactions if needed.
 
 - [ ] **Step 1: Preserve existing reconcile UI behavior**
 
@@ -1636,8 +1656,8 @@ git commit -m "feat: add Xero-style reconciliation UI actions"
 ### Task 11: Add Feed Controls To Bank Account Screens
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/ui/views/bank.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/electron/main.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/ui/views/bank.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/electron/main.js`
 
 - [ ] **Step 1: Add `Sync fake feed` development control**
 
@@ -1709,9 +1729,9 @@ git commit -m "feat: add bank feed sync controls"
 ### Task 12: Add Regression Coverage For Full Xero-Style Flow
 
 **Files:**
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/tests/bank-feed.test.js`
-- Modify: `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds/README.md`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-reconciliation-xero.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/tests/bank-feed.test.js`
+- Modify: `/Volumes/1tb/Ledgerly-bank-feeds/README.md`
 
 - [ ] **Step 1: Add full flow test**
 
@@ -1822,5 +1842,4 @@ Reference docs:
 - Spec coverage: The plan covers statement-line metadata, dedupe, audit trail, improved matching, rules, transfer, split, provider-neutral imports, fake provider sync, Basiq adapter, IPC, UI, and regression tests.
 - Placeholder scan: The plan contains concrete tasks, file paths, commands, and expected outcomes. No unspecified implementation gaps are required to complete a phase.
 - Type consistency: Provider transactions use `provider`, `sourceAccountId`, `sourceTransactionId`, `date`, `payee`, `description`, `reference`, `amountCents`, `postedAt`, and `raw` consistently across tests and services.
-- Safety: All work is scoped to `/Users/davidnaguib/Desktop/Ledgerly-bank-feeds`; the original `/Users/davidnaguib/Desktop/Ledgerly` remains untouched.
-
+- Safety: All work is scoped to `/Volumes/1tb/Ledgerly-bank-feeds`; the original `/Users/davidnaguib/Desktop/Ledgerly` remains untouched.
