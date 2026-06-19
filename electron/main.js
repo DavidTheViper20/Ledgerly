@@ -190,6 +190,21 @@ app.whenReady().then(() => {
     }
   });
 
+  const BANK_FEED_METHODS = {
+    async fakeSync(a) {
+      return require('../src/services/bank-feed/fake-provider').sync(db, a);
+    },
+  };
+  ipcMain.handle('bank-feed', async (_e, method, args) => {
+    try {
+      const fn = BANK_FEED_METHODS[method];
+      if (!fn) throw new Error('Unknown bank feed method: ' + method);
+      return { ok: true, data: await fn(args || {}) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // Streaming chat: progress events (thinking/reply/tool/status) are pushed
   // to the renderer tagged with the caller-supplied id; the final result
   // resolves the invoke as usual.

@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld('ledgerly', {
     if (!res.ok) throw new Error(res.error);
     return res.data;
   },
+  async bankFeed(method, args) {
+    const res = await ipcRenderer.invoke('bank-feed', method, args);
+    if (!res.ok) throw new Error(res.error);
+    return res.data;
+  },
   // Streaming chat: onEvent receives { type: 'status'|'thinking'|'reply'|'tool', ... }
   // while the model works; the returned promise resolves with the final
   // { reply, toolsUsed, sources }.
