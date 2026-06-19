@@ -298,6 +298,7 @@ const METHODS = {
   'bank.match': (db, a) => bank.matchStatementLine(db, a),
   'bank.createAndMatch': (db, a) => bank.createAndMatch(db, a),
   'bank.unreconcile': (db, a) => bank.unreconcile(db, a.statementLineId),
+  'bank.reconciliationHistory': (db, a) => bank.reconciliationHistory(db, a.statementLineId),
 
   'journals.list': journals.list,
   'journals.get': journals.get,

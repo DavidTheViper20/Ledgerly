@@ -213,6 +213,17 @@ CREATE TABLE IF NOT EXISTS statement_lines (
   imported_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS reconciliations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  statement_line_id INTEGER NOT NULL REFERENCES statement_lines(id),
+  matched_kind TEXT NOT NULL,
+  matched_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  reconciled_at TEXT NOT NULL DEFAULT (datetime('now')),
+  unreconciled_at TEXT,
+  note TEXT DEFAULT ''
+);
+
 -- source_kind: invoice | payment | bank_transaction | transfer | manual
 -- status: DRAFT (manual only) | POSTED | VOIDED
 CREATE TABLE IF NOT EXISTS journals (
@@ -446,6 +457,7 @@ CREATE INDEX IF NOT EXISTS idx_stmt_bank ON statement_lines(bank_account_id, sta
 CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_source_tx
   ON statement_lines(source_provider, source_transaction_id)
   WHERE source_provider IS NOT NULL AND source_transaction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_reconciliations_statement ON reconciliations(statement_line_id, unreconciled_at);
 `;
 
 const DEFAULT_SETTINGS = {

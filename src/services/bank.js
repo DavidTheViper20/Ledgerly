@@ -337,6 +337,24 @@ function deleteStatementLine(db, id) {
 
 // ---------- reconciliation ----------
 
+function recordReconciliation(db, { statementLineId, matchedKind, matchedId, action, note = '' }) {
+  db.prepare(`INSERT INTO reconciliations
+    (statement_line_id, matched_kind, matched_id, action, note)
+    VALUES (?,?,?,?,?)`).run(statementLineId, matchedKind, matchedId, action, note);
+}
+
+function closeReconciliation(db, statementLineId) {
+  db.prepare(`UPDATE reconciliations
+    SET unreconciled_at = datetime('now')
+    WHERE statement_line_id = ? AND unreconciled_at IS NULL`).run(statementLineId);
+}
+
+function reconciliationHistory(db, statementLineId) {
+  return db.prepare(`SELECT * FROM reconciliations
+    WHERE statement_line_id = ?
+    ORDER BY reconciled_at DESC, id DESC`).all(statementLineId);
+}
+
 // For each unmatched statement line, suggest unreconciled app transactions
 // with the same amount (and rank by date proximity).
 function reconcileData(db, bankAccountId) {
@@ -358,7 +376,7 @@ function reconcileData(db, bankAccountId) {
   return { statementLines: stmts, unreconciledTransactions: candidates };
 }
 
-function matchStatementLine(db, { statementLineId, kind, id, direction = null }) {
+function matchStatementLine(db, { statementLineId, kind, id, direction = null, action = 'matched_existing' }) {
   const sl = db.prepare('SELECT * FROM statement_lines WHERE id = ?').get(statementLineId);
   if (!sl) throw new Error('Statement line not found');
   if (sl.status === 'MATCHED') throw new Error('Already reconciled');
@@ -371,6 +389,12 @@ function matchStatementLine(db, { statementLineId, kind, id, direction = null })
   } else throw new Error('Unknown transaction kind');
   db.prepare("UPDATE statement_lines SET status='MATCHED', matched_kind=?, matched_id=? WHERE id=?")
     .run(kind + (kind === 'transfer' ? ':' + direction : ''), id, statementLineId);
+  recordReconciliation(db, {
+    statementLineId,
+    matchedKind: kind + (kind === 'transfer' ? ':' + direction : ''),
+    matchedId: id,
+    action,
+  });
   return { ok: true };
 }
 
@@ -389,7 +413,12 @@ function createAndMatch(db, { statementLineId, contactId = null, accountId, taxR
       qty: 1, unitPriceCents: Math.abs(sl.amount_cents), accountId, taxRateId,
     }],
   });
-  return matchStatementLine(db, { statementLineId, kind: 'bank_transaction', id: t.id });
+  return matchStatementLine(db, {
+    statementLineId,
+    kind: 'bank_transaction',
+    id: t.id,
+    action: 'created_transaction',
+  });
 }
 
 function unreconcile(db, statementLineId) {
@@ -400,11 +429,12 @@ function unreconcile(db, statementLineId) {
   else if (kind === 'bank_transaction') db.prepare('UPDATE bank_transactions SET is_reconciled = 0 WHERE id = ?').run(sl.matched_id);
   else if (kind === 'transfer') db.prepare(`UPDATE transfers SET ${direction === 'in' ? 'to_reconciled' : 'from_reconciled'} = 0 WHERE id = ?`).run(sl.matched_id);
   db.prepare("UPDATE statement_lines SET status='UNMATCHED', matched_kind=NULL, matched_id=NULL WHERE id=?").run(statementLineId);
+  closeReconciliation(db, statementLineId);
   return { ok: true };
 }
 
 module.exports = {
   listBankAccounts, createBankAccount, saveBankTransaction, getBankTransaction, deleteBankTransaction,
   saveTransfer, listAccountTransactions, importStatement, importFeedTransactions, addStatementLine, deleteStatementLine,
-  reconcileData, matchStatementLine, createAndMatch, unreconcile, parseCsv, normaliseDate,
+  reconcileData, matchStatementLine, createAndMatch, unreconcile, reconciliationHistory, parseCsv, normaliseDate,
 };
