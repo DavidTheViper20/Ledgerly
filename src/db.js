@@ -224,6 +224,23 @@ CREATE TABLE IF NOT EXISTS reconciliations (
   note TEXT DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS bank_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  bank_account_id INTEGER REFERENCES accounts(id),
+  direction TEXT NOT NULL DEFAULT 'any',
+  text_contains TEXT DEFAULT '',
+  min_amount_cents INTEGER,
+  max_amount_cents INTEGER,
+  contact_id INTEGER REFERENCES contacts(id),
+  account_id INTEGER REFERENCES accounts(id),
+  tax_rate_id INTEGER REFERENCES tax_rates(id),
+  description_template TEXT DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- source_kind: invoice | payment | bank_transaction | transfer | manual
 -- status: DRAFT (manual only) | POSTED | VOIDED
 CREATE TABLE IF NOT EXISTS journals (

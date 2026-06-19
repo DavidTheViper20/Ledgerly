@@ -97,3 +97,30 @@ test('reconciliation matcher: ranks exact amount date and reference above amount
   assert.ok(line.suggestions[0].reasons.includes('Exact amount'));
   assert.ok(line.suggestions[0].reasons.includes('Reference match'));
 });
+
+test('bank rules: matching rule returns create suggestion without posting a journal', () => {
+  const env = setup();
+  const rule = call('bank.rules.save', {
+    name: 'Adobe subscription',
+    bankAccountId: env.bank.id,
+    direction: 'money_out',
+    textContains: 'ADOBE',
+    minAmountCents: 1000,
+    maxAmountCents: 10000,
+    contactId: null,
+    accountId: env.rent.id,
+    taxRateId: null,
+    descriptionTemplate: 'Software subscription',
+    priority: 10,
+    enabled: true,
+  });
+  call('bank.importStatement', {
+    bankAccountId: env.bank.id,
+    csv: 'Date,Description,Amount\n2026-06-04,ADOBE CREATIVE CLOUD,-55.00\n',
+  });
+  const line = call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines[0];
+  assert.equal(line.ruleSuggestions.length, 1);
+  assert.equal(line.ruleSuggestions[0].rule_id, rule.id);
+  assert.equal(line.ruleSuggestions[0].account_id, env.rent.id);
+  assert.equal(call('journals.list', { manualOnly: false }).length, 0);
+});
