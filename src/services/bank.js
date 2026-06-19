@@ -278,6 +278,47 @@ function importStatement(db, { bankAccountId, csv }) {
   return { imported, skipped };
 }
 
+function importFeedTransactions(db, { bankAccountId, transactions = [] }) {
+  const existing = db.prepare(`SELECT id, status FROM statement_lines
+    WHERE source_provider = ? AND source_transaction_id = ?`);
+  const ins = db.prepare(`INSERT INTO statement_lines
+    (bank_account_id, date, payee, description, reference, amount_cents,
+     source_kind, source_provider, source_account_id, source_transaction_id, posted_at, raw_json)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+  let imported = 0;
+  let skipped = 0;
+  let updated = 0;
+  for (const tx of transactions) {
+    if (!tx.provider || !tx.sourceTransactionId) {
+      throw new Error('Feed transaction provider and sourceTransactionId are required');
+    }
+    if (!tx.date || !Number.isFinite(Number(tx.amountCents)) || Math.round(Number(tx.amountCents)) === 0) {
+      throw new Error('Feed transaction date and non-zero amountCents are required');
+    }
+    const prior = existing.get(tx.provider, tx.sourceTransactionId);
+    if (prior) {
+      skipped++;
+      continue;
+    }
+    ins.run(
+      bankAccountId,
+      tx.date,
+      tx.payee || '',
+      tx.description || '',
+      tx.reference || '',
+      Math.round(Number(tx.amountCents)),
+      'bank_feed',
+      tx.provider,
+      tx.sourceAccountId || '',
+      tx.sourceTransactionId,
+      tx.postedAt || null,
+      JSON.stringify(tx.raw || {})
+    );
+    imported++;
+  }
+  return { imported, skipped, updated };
+}
+
 function addStatementLine(db, { bankAccountId, date, payee = '', description = '', reference = '', amountCents }) {
   amountCents = Math.round(amountCents);
   if (!amountCents) throw new Error('Amount required');
@@ -364,6 +405,6 @@ function unreconcile(db, statementLineId) {
 
 module.exports = {
   listBankAccounts, createBankAccount, saveBankTransaction, getBankTransaction, deleteBankTransaction,
-  saveTransfer, listAccountTransactions, importStatement, addStatementLine, deleteStatementLine,
+  saveTransfer, listAccountTransactions, importStatement, importFeedTransactions, addStatementLine, deleteStatementLine,
   reconcileData, matchStatementLine, createAndMatch, unreconcile, parseCsv, normaliseDate,
 };

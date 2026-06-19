@@ -291,6 +291,7 @@ const METHODS = {
   'bank.transfer': (db, a) => bank.saveTransfer(db, a),
   'bank.transactions': (db, a) => bank.listAccountTransactions(db, a.bankAccountId),
   'bank.importStatement': (db, a) => bank.importStatement(db, a),
+  'bank.importFeedTransactions': (db, a) => bank.importFeedTransactions(db, a),
   'bank.addStatementLine': (db, a) => bank.addStatementLine(db, a),
   'bank.deleteStatementLine': (db, a) => bank.deleteStatementLine(db, a.id),
   'bank.reconcileData': (db, a) => bank.reconcileData(db, a.bankAccountId),

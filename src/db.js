@@ -204,6 +204,12 @@ CREATE TABLE IF NOT EXISTS statement_lines (
   status TEXT NOT NULL DEFAULT 'UNMATCHED',
   matched_kind TEXT,
   matched_id INTEGER,
+  source_kind TEXT NOT NULL DEFAULT 'manual',
+  source_provider TEXT,
+  source_account_id TEXT,
+  source_transaction_id TEXT,
+  posted_at TEXT,
+  raw_json TEXT,
   imported_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -437,6 +443,9 @@ CREATE INDEX IF NOT EXISTS idx_jl_account ON journal_lines(account_id);
 CREATE INDEX IF NOT EXISTS idx_journals_date ON journals(date);
 CREATE INDEX IF NOT EXISTS idx_inv_status ON invoices(kind, status);
 CREATE INDEX IF NOT EXISTS idx_stmt_bank ON statement_lines(bank_account_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_source_tx
+  ON statement_lines(source_provider, source_transaction_id)
+  WHERE source_provider IS NOT NULL AND source_transaction_id IS NOT NULL;
 `;
 
 const DEFAULT_SETTINGS = {
@@ -491,6 +500,16 @@ function migrate(db) {
   ensureColumn(db, 'bank_transaction_lines', 'project_id', 'INTEGER');
   // Web sources cited by assistant replies.
   ensureColumn(db, 'chat_messages', 'sources', 'TEXT');
+  // Xero-style bank feed source metadata for statement-line dedupe.
+  ensureColumn(db, 'statement_lines', 'source_kind', "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn(db, 'statement_lines', 'source_provider', 'TEXT');
+  ensureColumn(db, 'statement_lines', 'source_account_id', 'TEXT');
+  ensureColumn(db, 'statement_lines', 'source_transaction_id', 'TEXT');
+  ensureColumn(db, 'statement_lines', 'posted_at', 'TEXT');
+  ensureColumn(db, 'statement_lines', 'raw_json', 'TEXT');
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_source_tx
+    ON statement_lines(source_provider, source_transaction_id)
+    WHERE source_provider IS NOT NULL AND source_transaction_id IS NOT NULL`);
   // System accounts added after first release (no-op on fresh DBs).
   const have = new Set(db.prepare('SELECT code FROM accounts').all().map(r => r.code));
   if (have.size) {
