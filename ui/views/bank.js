@@ -118,6 +118,8 @@ VIEWS.bankAccount = async function (main, params) {
     <div class="page-head">
       <h1>${esc(b.name)}</h1>
       <div class="spacer"></div>
+      <button class="btn" id="btn-sync-fake">Sync demo feed</button>
+      ${STATE.settings.basiq_server_token && STATE.settings.basiq_user_id ? '<button class="btn" id="btn-sync-basiq">Sync Basiq feed</button>' : ''}
       <a class="btn" href="#/bank/${id}/import">Import statement</a>
       <a class="btn" href="#/bank/spend?bank=${id}">Spend money</a>
       <a class="btn" href="#/bank/receive?bank=${id}">Receive money</a>
@@ -149,6 +151,32 @@ VIEWS.bankAccount = async function (main, params) {
         </tbody>
       </table>
     </div>`;
+
+  document.getElementById('btn-sync-fake')?.addEventListener('click', async () => {
+    try {
+      const r = await window.ledgerly.bankFeed('fakeSync', {
+        bankAccountId: id,
+        providerAccountId: `ledgerly-bank-${id}`,
+      });
+      toast(`Synced ${r.imported} new line${r.imported === 1 ? '' : 's'}`, 'success');
+      if (r.imported > 0) navigate(`#/bank/${id}/reconcile`);
+    } catch (e) { showError(e); }
+  });
+
+  document.getElementById('btn-sync-basiq')?.addEventListener('click', async () => {
+    const providerAccountId = prompt('Basiq provider account ID');
+    if (!providerAccountId) return;
+    try {
+      const r = await window.ledgerly.bankFeed('basiqSync', {
+        serverToken: STATE.settings.basiq_server_token,
+        userId: STATE.settings.basiq_user_id,
+        providerAccountId,
+        bankAccountId: id,
+      });
+      toast(`Synced ${r.imported} new line${r.imported === 1 ? '' : 's'}`, 'success');
+      if (r.imported > 0) navigate(`#/bank/${id}/reconcile`);
+    } catch (e) { showError(e); }
+  });
 
   on(main, '.btn-del-tx', 'click', async (ev) => {
     if (!confirm('Delete this transaction? Its ledger entry will be reversed.')) return;
