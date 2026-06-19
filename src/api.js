@@ -298,6 +298,7 @@ const METHODS = {
   'bank.match': (db, a) => bank.matchStatementLine(db, a),
   'bank.createAndMatch': (db, a) => bank.createAndMatch(db, a),
   'bank.createTransferAndMatch': (db, a) => bank.createTransferAndMatch(db, a),
+  'bank.createSplitAndMatch': (db, a) => bank.createSplitAndMatch(db, a),
   'bank.unreconcile': (db, a) => bank.unreconcile(db, a.statementLineId),
   'bank.reconciliationHistory': (db, a) => bank.reconciliationHistory(db, a.statementLineId),
   'bank.rules.list': (db) => require('./services/reconciliation/rules').listRules(db),

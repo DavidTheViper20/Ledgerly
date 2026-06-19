@@ -150,3 +150,41 @@ test('reconciliation transfer: creates transfer from money-out statement line an
   assert.equal(banks.find(b => b.id === savings.id).balance_cents, 25000);
   assert.equal(call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines.length, 0);
 });
+
+test('reconciliation split: creates one bank transaction with multiple coded lines', () => {
+  const env = setup();
+  const meals = db.prepare("SELECT * FROM accounts WHERE code='499'").get() || env.rent;
+  call('bank.importStatement', {
+    bankAccountId: env.bank.id,
+    csv: 'Date,Description,Amount\n2026-06-06,Mixed supplier,-150.00\n',
+  });
+  const line = call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines[0];
+
+  const tx = call('bank.createSplitAndMatch', {
+    statementLineId: line.id,
+    contactId: null,
+    taxMode: 'none',
+    lines: [
+      { description: 'Office rent portion', amountCents: 10000, accountId: env.rent.id, taxRateId: null },
+      { description: 'Meal portion', amountCents: 5000, accountId: meals.id, taxRateId: null },
+    ],
+  });
+  assert.equal(tx.kind, 'SPEND');
+  assert.equal(tx.total_cents, 15000);
+  assert.equal(tx.lines.length, 2);
+  assert.equal(call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines.length, 0);
+});
+
+test('reconciliation split: rejects totals that do not equal statement line amount', () => {
+  const env = setup();
+  call('bank.importStatement', {
+    bankAccountId: env.bank.id,
+    csv: 'Date,Description,Amount\n2026-06-07,Mixed supplier,-150.00\n',
+  });
+  const line = call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines[0];
+  assert.throws(() => call('bank.createSplitAndMatch', {
+    statementLineId: line.id,
+    taxMode: 'none',
+    lines: [{ description: 'Short split', amountCents: 14999, accountId: env.rent.id }],
+  }), /Split total must equal/);
+});

@@ -435,6 +435,38 @@ function createTransferAndMatch(db, { statementLineId, otherBankAccountId, refer
   return db.prepare('SELECT * FROM transfers WHERE id=?').get(transfer.id);
 }
 
+function createSplitAndMatch(db, { statementLineId, contactId = null, taxMode = 'none', lines = [] }) {
+  const sl = db.prepare('SELECT * FROM statement_lines WHERE id = ?').get(statementLineId);
+  if (!sl) throw new Error('Statement line not found');
+  if (sl.status === 'MATCHED') throw new Error('Already reconciled');
+  const expected = Math.abs(sl.amount_cents);
+  const total = lines.reduce((sum, line) => sum + Math.round(line.amountCents || 0), 0);
+  if (total !== expected) throw new Error('Split total must equal the statement line amount');
+  const kind = sl.amount_cents >= 0 ? 'RECEIVE' : 'SPEND';
+  const tx = saveBankTransaction(db, {
+    kind,
+    bankAccountId: sl.bank_account_id,
+    contactId,
+    date: sl.date,
+    reference: sl.reference || sl.payee || sl.description,
+    taxMode,
+    lines: lines.map(line => ({
+      description: line.description || sl.description || sl.payee || 'Split bank transaction',
+      qty: 1,
+      unitPriceCents: Math.round(line.amountCents || 0),
+      accountId: line.accountId,
+      taxRateId: line.taxRateId || null,
+    })),
+  });
+  matchStatementLine(db, {
+    statementLineId,
+    kind: 'bank_transaction',
+    id: tx.id,
+    action: 'created_split',
+  });
+  return getBankTransaction(db, tx.id);
+}
+
 function unreconcile(db, statementLineId) {
   const sl = db.prepare('SELECT * FROM statement_lines WHERE id = ?').get(statementLineId);
   if (!sl || sl.status !== 'MATCHED') throw new Error('Line is not reconciled');
@@ -450,6 +482,7 @@ function unreconcile(db, statementLineId) {
 module.exports = {
   listBankAccounts, createBankAccount, saveBankTransaction, getBankTransaction, deleteBankTransaction,
   saveTransfer, listAccountTransactions, importStatement, importFeedTransactions, addStatementLine, deleteStatementLine,
-  reconcileData, matchStatementLine, createAndMatch, createTransferAndMatch, unreconcile, reconciliationHistory,
+  reconcileData, matchStatementLine, createAndMatch, createTransferAndMatch, createSplitAndMatch,
+  unreconcile, reconciliationHistory,
   parseCsv, normaliseDate,
 };
