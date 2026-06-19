@@ -188,3 +188,146 @@ test('reconciliation split: rejects totals that do not equal statement line amou
     lines: [{ description: 'Short split', amountCents: 14999, accountId: env.rent.id }],
   }), /Split total must equal/);
 });
+
+test('xero-style flow: feed lines match existing payments and create ruled expenses', () => {
+  const env = setup();
+  const rule = call('bank.rules.save', {
+    name: 'Officeworks card spend',
+    bankAccountId: env.bank.id,
+    direction: 'money_out',
+    textContains: 'OFFICEWORKS',
+    minAmountCents: 1000,
+    maxAmountCents: 10000,
+    accountId: env.rent.id,
+    descriptionTemplate: 'Office supplies',
+    priority: 20,
+    enabled: true,
+  });
+  const inv = call('invoices.save', {
+    kind: 'ACCREC',
+    contactId: env.contact.id,
+    issueDate: '2026-06-01',
+    dueDate: '2026-06-14',
+    taxMode: 'none',
+    reference: 'INV-FLOW',
+    lines: [{ description: 'Consulting', qty: 1, unitPriceCents: 10000, accountId: env.sales.id }],
+  });
+  call('invoices.approve', { id: inv.id });
+  call('payments.add', {
+    invoiceId: inv.id,
+    bankAccountId: env.bank.id,
+    date: '2026-06-10',
+    amountCents: 10000,
+    reference: 'INV-FLOW',
+  });
+  call('bank.importFeedTransactions', {
+    bankAccountId: env.bank.id,
+    transactions: [
+      {
+        provider: 'fake',
+        sourceAccountId: 'acc-flow',
+        sourceTransactionId: 'flow-deposit',
+        date: '2026-06-10',
+        payee: 'Acme Ltd',
+        description: 'Customer payment',
+        reference: 'INV-FLOW',
+        amountCents: 10000,
+      },
+      {
+        provider: 'fake',
+        sourceAccountId: 'acc-flow',
+        sourceTransactionId: 'flow-card',
+        date: '2026-06-11',
+        payee: 'Officeworks',
+        description: 'OFFICEWORKS CARD',
+        reference: 'CARD',
+        amountCents: -5500,
+      },
+    ],
+  });
+
+  let data = call('bank.reconcileData', { bankAccountId: env.bank.id });
+  const deposit = data.statementLines.find(line => line.amount_cents === 10000);
+  call('bank.match', {
+    statementLineId: deposit.id,
+    kind: deposit.suggestions[0].kind,
+    id: deposit.suggestions[0].id,
+  });
+
+  data = call('bank.reconcileData', { bankAccountId: env.bank.id });
+  const card = data.statementLines.find(line => line.amount_cents === -5500);
+  const suggestion = card.ruleSuggestions[0];
+  assert.equal(suggestion.rule_id, rule.id);
+  call('bank.createAndMatch', {
+    statementLineId: card.id,
+    contactId: suggestion.contact_id,
+    accountId: suggestion.account_id,
+    taxRateId: suggestion.tax_rate_id,
+    description: suggestion.description,
+  });
+
+  assert.equal(call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines.length, 0);
+  const bank = call('bank.accounts').find(b => b.id === env.bank.id);
+  assert.equal(bank.unreconciled, 0);
+  assert.equal(bank.statement_balance_cents, bank.balance_cents);
+  assert.equal(bank.balance_cents, 4500);
+  const pl = call('reports.profitAndLoss', { from: '2026-06-01', to: '2026-06-30' });
+  assert.equal(pl.totals.revenue_cents, 10000);
+  assert.equal(pl.totals.expenses_cents, 5500);
+});
+
+test('reconciliation regression: duplicates are skipped and unreconcile unlocks created transaction edits', () => {
+  const env = setup();
+  const feed = {
+    provider: 'fake',
+    sourceAccountId: 'acc-dup',
+    sourceTransactionId: 'dup-card',
+    date: '2026-06-12',
+    payee: 'OfficeMart',
+    description: 'Stationery',
+    reference: 'CARD',
+    amountCents: -4200,
+  };
+  assert.deepEqual(call('bank.importFeedTransactions', {
+    bankAccountId: env.bank.id,
+    transactions: [feed],
+  }), { imported: 1, skipped: 0, updated: 0 });
+  assert.deepEqual(call('bank.importFeedTransactions', {
+    bankAccountId: env.bank.id,
+    transactions: [feed],
+  }), { imported: 0, skipped: 1, updated: 0 });
+  let data = call('bank.reconcileData', { bankAccountId: env.bank.id });
+  assert.equal(data.statementLines.length, 1);
+
+  const line = data.statementLines[0];
+  call('bank.createAndMatch', {
+    statementLineId: line.id,
+    accountId: env.rent.id,
+    description: 'Stationery',
+  });
+  const matched = db.prepare('SELECT * FROM statement_lines WHERE id=?').get(line.id);
+  assert.equal(matched.status, 'MATCHED');
+  assert.throws(() => call('bank.saveTransaction', {
+    id: matched.matched_id,
+    kind: 'SPEND',
+    bankAccountId: env.bank.id,
+    date: '2026-06-12',
+    taxMode: 'none',
+    reference: 'Locked edit',
+    lines: [{ description: 'Locked', qty: 1, unitPriceCents: 4200, accountId: env.rent.id }],
+  }), /Unreconcile/);
+
+  call('bank.unreconcile', { statementLineId: line.id });
+  data = call('bank.reconcileData', { bankAccountId: env.bank.id });
+  assert.equal(data.statementLines.length, 1);
+  const edited = call('bank.saveTransaction', {
+    id: matched.matched_id,
+    kind: 'SPEND',
+    bankAccountId: env.bank.id,
+    date: '2026-06-12',
+    taxMode: 'none',
+    reference: 'Unlocked edit',
+    lines: [{ description: 'Unlocked', qty: 1, unitPriceCents: 4200, accountId: env.rent.id }],
+  });
+  assert.equal(edited.reference, 'Unlocked edit');
+});

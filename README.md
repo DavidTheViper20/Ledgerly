@@ -54,9 +54,9 @@ invoices, BAS activity-statement summary (G1/1A/1B/W1/W2), PAYG withholding and
 
 **Banking**
 - Multiple bank accounts; spend money, receive money and transfers
-- Bank statement import from CSV (signed Amount or Debit/Credit columns, flexible dates)
-- Reconciliation screen with automatic match suggestions, or create-and-code new
-  transactions straight from a statement line
+- Bank statement lines from CSV, manual entry, demo feed sync and provider feed sync
+- Reconciliation screen with scored match suggestions, rules, transfer creation,
+  split coding, or create-and-code new transactions straight from a statement line
 - Ledger balance vs statement balance shown side by side
 
 **Accounting**
@@ -79,6 +79,13 @@ invoices, BAS activity-statement summary (G1/1A/1B/W1/W2), PAYG withholding and
 - Dashboard with cash-flow chart, bank balances, invoice/bill status totals
 - Contacts with customer/supplier flags, balances owed and full activity
 - First-run setup wizard; org settings, financial year end, currency, tax label
+
+## Xero-style bank reconciliation
+
+Ledgerly imports bank data as statement lines. Statement lines can come from CSV,
+manual entry, demo feed sync, or provider feeds. A statement line does not change
+the accounting ledger until it is matched to an existing transaction or used to
+create a spend, receive, transfer, or split transaction during reconciliation.
 
 ## Getting started
 
