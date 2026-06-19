@@ -194,6 +194,9 @@ app.whenReady().then(() => {
     async fakeSync(a) {
       return require('../src/services/bank-feed/fake-provider').sync(db, a);
     },
+    async basiqSync(a) {
+      return require('../src/services/bank-feed/basiq').syncTransactions(db, a);
+    },
   };
   ipcMain.handle('bank-feed', async (_e, method, args) => {
     try {

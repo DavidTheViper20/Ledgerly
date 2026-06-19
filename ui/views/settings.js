@@ -78,6 +78,15 @@ VIEWS.settingsView = async function (main) {
           </form>
         </div>
 
+        <div class="card">
+          <h2>Bank feed settings</h2>
+          <form id="bank-feed-form">
+            <label class="field">Basiq server token<input name="basiq_server_token" type="password" value="${esc(s.basiq_server_token || '')}" /></label>
+            <label class="field">Basiq user ID<input name="basiq_user_id" value="${esc(s.basiq_user_id || '')}" /></label>
+            <button class="btn primary" type="submit">Save bank feed settings</button>
+          </form>
+        </div>
+
         <div class="card" id="ai-card">
           <h2>AI assistant</h2>
           <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0">
@@ -272,6 +281,15 @@ VIEWS.settingsView = async function (main) {
     try {
       await api('settings.update', Object.fromEntries(new FormData(ev.target).entries()));
       toast('Invoice settings saved', 'success');
+    } catch (e) { showError(e); }
+  });
+
+  document.getElementById('bank-feed-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      await api('settings.update', Object.fromEntries(new FormData(ev.target).entries()));
+      toast('Bank feed settings saved', 'success');
+      loadRefData();
     } catch (e) { showError(e); }
   });
 

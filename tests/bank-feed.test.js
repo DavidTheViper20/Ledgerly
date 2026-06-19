@@ -74,3 +74,21 @@ test('bank feed sync: fake provider normalizes transactions and imports statemen
   assert.ok(lines.some(l => l.amount_cents < 0));
   assert.ok(lines.some(l => l.amount_cents > 0));
 });
+
+test('basiq adapter: maps transaction fixture to normalized signed cents', () => {
+  const basiq = require('../src/services/bank-feed/basiq');
+  const tx = basiq.mapBasiqTransaction({
+    id: 'bq-tx-1',
+    account: 'bq-acc-1',
+    postDate: '2026-06-12',
+    description: 'BP FUEL',
+    amount: '-62.76',
+    balance: '1000.00',
+  });
+  assert.equal(tx.provider, 'basiq');
+  assert.equal(tx.sourceAccountId, 'bq-acc-1');
+  assert.equal(tx.sourceTransactionId, 'bq-tx-1');
+  assert.equal(tx.date, '2026-06-12');
+  assert.equal(tx.description, 'BP FUEL');
+  assert.equal(tx.amountCents, -6276);
+});
