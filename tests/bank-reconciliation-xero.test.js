@@ -48,3 +48,52 @@ test('reconciliation audit: match records action and unreconcile closes it', () 
   assert.equal(history.length, 1);
   assert.match(history[0].unreconciled_at, /^\d{4}-\d{2}-\d{2}/);
 });
+
+test('reconciliation matcher: ranks exact amount date and reference above amount-only matches', () => {
+  const env = setup();
+  const invA = call('invoices.save', {
+    kind: 'ACCREC',
+    contactId: env.contact.id,
+    issueDate: '2026-06-01',
+    dueDate: '2026-06-14',
+    taxMode: 'none',
+    reference: 'INV-A',
+    lines: [{ description: 'A', qty: 1, unitPriceCents: 20000, accountId: env.sales.id }],
+  });
+  const invB = call('invoices.save', {
+    kind: 'ACCREC',
+    contactId: env.contact.id,
+    issueDate: '2026-06-01',
+    dueDate: '2026-06-14',
+    taxMode: 'none',
+    reference: 'INV-B',
+    lines: [{ description: 'B', qty: 1, unitPriceCents: 20000, accountId: env.sales.id }],
+  });
+  call('invoices.approve', { id: invA.id });
+  call('invoices.approve', { id: invB.id });
+  const oldPayment = call('payments.add', {
+    invoiceId: invA.id,
+    bankAccountId: env.bank.id,
+    date: '2026-05-15',
+    amountCents: 20000,
+    reference: 'OLD',
+  });
+  const bestPayment = call('payments.add', {
+    invoiceId: invB.id,
+    bankAccountId: env.bank.id,
+    date: '2026-06-03',
+    amountCents: 20000,
+    reference: 'INV-B',
+  });
+  call('bank.importStatement', {
+    bankAccountId: env.bank.id,
+    csv: 'Date,Description,Reference,Amount\n2026-06-03,ACME PAYMENT,INV-B,200.00\n',
+  });
+
+  const line = call('bank.reconcileData', { bankAccountId: env.bank.id }).statementLines[0];
+  assert.equal(line.suggestions[0].kind, 'payment');
+  assert.equal(line.suggestions[0].id, bestPayment.payments.at(-1).id);
+  assert.ok(line.suggestions[0].score > line.suggestions.find(s => s.id === oldPayment.payments.at(-1).id).score);
+  assert.ok(line.suggestions[0].reasons.includes('Exact amount'));
+  assert.ok(line.suggestions[0].reasons.includes('Reference match'));
+});

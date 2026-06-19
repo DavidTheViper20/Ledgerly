@@ -5,6 +5,7 @@
 
 const { calcLine, sumLines, toCents } = require('../money');
 const { postJournal, voidJournal, accountBalance } = require('./ledger');
+const { suggestMatches } = require('./reconciliation/matcher');
 
 function taxRate(db, id) {
   if (!id) return 0;
@@ -361,19 +362,7 @@ function reconcileData(db, bankAccountId) {
   const stmts = db.prepare(`SELECT * FROM statement_lines
     WHERE bank_account_id = ? AND status = 'UNMATCHED' ORDER BY date, id`).all(bankAccountId);
   const candidates = listAccountTransactions(db, bankAccountId).filter(t => !t.is_reconciled);
-  const used = new Set();
-  for (const s of stmts) {
-    s.suggestions = candidates
-      .filter(c => c.amount_cents === s.amount_cents && !used.has(c.kind + ':' + c.id + ':' + (c.direction || '')))
-      .map(c => ({ ...c, daysApart: Math.abs((new Date(c.date) - new Date(s.date)) / 864e5) }))
-      .sort((a, b) => a.daysApart - b.daysApart)
-      .slice(0, 3);
-    if (s.suggestions.length) {
-      const top = s.suggestions[0];
-      used.add(top.kind + ':' + top.id + ':' + (top.direction || ''));
-    }
-  }
-  return { statementLines: stmts, unreconciledTransactions: candidates };
+  return { statementLines: suggestMatches(stmts, candidates), unreconciledTransactions: candidates };
 }
 
 function matchStatementLine(db, { statementLineId, kind, id, direction = null, action = 'matched_existing' }) {
