@@ -6,6 +6,8 @@ const fs = require('node:fs');
 
 const dbm = require('../src/db');
 const api = require('../src/api');
+const bankFeedFlow = require('../src/services/bank-feed/flow');
+const { createBasiqBroker } = require('../src/services/bank-feed/basiq-broker');
 
 let db;
 let win;
@@ -190,11 +192,49 @@ app.whenReady().then(() => {
     }
   });
 
+  const basiqBroker = createBasiqBroker({
+    apiKey: process.env.LEDGERLY_BASIQ_API_KEY || process.env.BASIQ_API_KEY || '',
+  });
   const BANK_FEED_METHODS = {
+    async status() {
+      return bankFeedFlow.status(db, { broker: basiqBroker });
+    },
+    async startConnect(a) {
+      const settings = api.call(db, 'settings.all', {});
+      return bankFeedFlow.startConnect(db, {
+        broker: basiqBroker,
+        email: a.email || settings.org_email || '',
+        mobile: a.mobile || '',
+        action: a.action || 'connect',
+        openExternal: (url) => shell.openExternal(url),
+      });
+    },
+    async listProviderAccounts(a) {
+      return bankFeedFlow.listProviderAccounts(db, { broker: basiqBroker, userId: a.userId });
+    },
+    async mapProviderAccount(a) {
+      return bankFeedFlow.mapProviderAccount(db, a);
+    },
+    async syncLinkedAccount(a) {
+      return bankFeedFlow.syncLinkedAccount(db, { broker: basiqBroker, linkId: a.linkId, bankAccountId: a.bankAccountId });
+    },
+    async manageConsent(a) {
+      return bankFeedFlow.manageConsent(db, {
+        broker: basiqBroker,
+        action: a.action || 'manage',
+        openExternal: (url) => shell.openExternal(url),
+      });
+    },
+    async disconnectLocalMapping(a) {
+      return api.call(db, 'bankFeed.disconnectLocalMapping', a);
+    },
     async fakeSync(a) {
       return require('../src/services/bank-feed/fake-provider').sync(db, a);
     },
     async basiqSync(a) {
+      if (process.env.LEDGERLY_BANK_FEED_DEV !== '1') {
+        throw new Error('Direct Basiq token sync is disabled. Use Connect bank account.');
+      }
       return require('../src/services/bank-feed/basiq').syncTransactions(db, a);
     },
   };

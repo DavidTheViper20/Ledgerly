@@ -113,13 +113,20 @@ VIEWS.bankAccount = async function (main, params) {
   const b = banks.find(x => x.id === id);
   if (!b) { main.innerHTML = '<div class="card">Account not found</div>'; return; }
   const txs = await api('bank.transactions', { bankAccountId: id });
+  let feed = { configured: false, connections: [], accountLinks: [] };
+  try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
+  const linkedFeed = (feed.accountLinks || []).find(l => Number(l.bank_account_id) === id);
+  const hasConnection = (feed.connections || []).some(c => c.provider_user_id);
 
   main.innerHTML = `
     <div class="page-head">
       <h1>${esc(b.name)}</h1>
       <div class="spacer"></div>
       <button class="btn" id="btn-sync-fake">Sync demo feed</button>
-      ${STATE.settings.basiq_server_token && STATE.settings.basiq_user_id ? '<button class="btn" id="btn-sync-basiq">Sync Basiq feed</button>' : ''}
+      ${linkedFeed
+        ? '<button class="btn" id="btn-sync-linked">Sync linked feed</button>'
+        : `<button class="btn" id="btn-connect-bank" ${feed.configured ? '' : 'disabled title="Set LEDGERLY_BASIQ_API_KEY on the backend"'}>Connect bank account</button>`}
+      ${!linkedFeed && hasConnection ? '<button class="btn" id="btn-map-feed">Map connected feed</button>' : ''}
       <a class="btn" href="#/bank/${id}/import">Import statement</a>
       <a class="btn" href="#/bank/spend?bank=${id}">Spend money</a>
       <a class="btn" href="#/bank/receive?bank=${id}">Receive money</a>
@@ -163,16 +170,75 @@ VIEWS.bankAccount = async function (main, params) {
     } catch (e) { showError(e); }
   });
 
-  document.getElementById('btn-sync-basiq')?.addEventListener('click', async () => {
-    const providerAccountId = prompt('Basiq provider account ID');
-    if (!providerAccountId) return;
+  async function openMapFeedModal() {
+    const m = modal(`
+      <h2>Map bank feed</h2>
+      <div id="feed-account-list"><div class="empty">Loading accounts...</div></div>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn" type="button" id="feed-map-refresh">Refresh accounts</button>
+        <button class="btn" type="button" id="feed-map-cancel">Close</button>
+      </div>`);
+    const list = m.querySelector('#feed-account-list');
+    async function loadAccounts() {
+      list.innerHTML = '<div class="empty">Loading accounts...</div>';
+      try {
+        const accounts = await window.ledgerly.bankFeed('listProviderAccounts', {});
+        if (!accounts.length) {
+          list.innerHTML = '<div class="empty">No provider accounts returned yet</div>';
+          return;
+        }
+        list.innerHTML = `
+          <table class="data">
+            <thead><tr><th>Provider account</th><th>Number</th><th>Type</th><th></th></tr></thead>
+            <tbody>${accounts.map((a, idx) => `
+              <tr>
+                <td>${esc(a.providerAccountName || a.providerAccountId)}</td>
+                <td>${esc(a.providerAccountNumber || '')}</td>
+                <td>${esc(a.providerAccountType || '')}</td>
+                <td><button class="btn small primary btn-map-provider" data-idx="${idx}">Map</button></td>
+              </tr>`).join('')}</tbody>
+          </table>`;
+        on(list, '.btn-map-provider', 'click', async (ev) => {
+          try {
+            const account = accounts[Number(ev.target.dataset.idx)];
+            const latest = await window.ledgerly.bankFeed('status');
+            const connection = (latest.connections || []).find(c => c.provider_user_id);
+            if (!connection) throw new Error('Connect a bank account first');
+            await window.ledgerly.bankFeed('mapProviderAccount', {
+              connectionId: connection.id,
+              providerAccountId: account.providerAccountId,
+              providerAccountName: account.providerAccountName,
+              providerAccountNumber: account.providerAccountNumber,
+              providerAccountType: account.providerAccountType,
+              bankAccountId: id,
+            });
+            closeModal();
+            toast('Bank feed mapped', 'success');
+            VIEWS.bankAccount(main, params);
+          } catch (e) { showError(e); }
+        });
+      } catch (e) {
+        list.innerHTML = `<div class="empty">${esc(e.message || e)}</div>`;
+      }
+    }
+    m.querySelector('#feed-map-cancel').addEventListener('click', closeModal);
+    m.querySelector('#feed-map-refresh').addEventListener('click', loadAccounts);
+    loadAccounts();
+  }
+
+  document.getElementById('btn-connect-bank')?.addEventListener('click', async () => {
     try {
-      const r = await window.ledgerly.bankFeed('basiqSync', {
-        serverToken: STATE.settings.basiq_server_token,
-        userId: STATE.settings.basiq_user_id,
-        providerAccountId,
-        bankAccountId: id,
-      });
+      await window.ledgerly.bankFeed('startConnect', {});
+      toast('Bank consent opened', 'success');
+      openMapFeedModal();
+    } catch (e) { showError(e); }
+  });
+
+  document.getElementById('btn-map-feed')?.addEventListener('click', openMapFeedModal);
+
+  document.getElementById('btn-sync-linked')?.addEventListener('click', async () => {
+    try {
+      const r = await window.ledgerly.bankFeed('syncLinkedAccount', { linkId: linkedFeed.id });
       toast(`Synced ${r.imported} new line${r.imported === 1 ? '' : 's'}`, 'success');
       if (r.imported > 0) navigate(`#/bank/${id}/reconcile`);
     } catch (e) { showError(e); }

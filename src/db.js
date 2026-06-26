@@ -241,6 +241,36 @@ CREATE TABLE IF NOT EXISTS bank_rules (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS bank_feed_connections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  provider_user_id TEXT DEFAULT '',
+  provider_connection_id TEXT DEFAULT '',
+  institution_name TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  consent_status TEXT NOT NULL DEFAULT 'unknown',
+  consent_expires_at TEXT,
+  last_sync_at TEXT,
+  last_error TEXT DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS bank_feed_account_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id INTEGER NOT NULL REFERENCES bank_feed_connections(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_account_id TEXT NOT NULL,
+  provider_account_name TEXT DEFAULT '',
+  provider_account_number TEXT DEFAULT '',
+  provider_account_type TEXT DEFAULT '',
+  bank_account_id INTEGER NOT NULL REFERENCES accounts(id),
+  sync_cursor TEXT DEFAULT '',
+  last_sync_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- source_kind: invoice | payment | bank_transaction | transfer | manual
 -- status: DRAFT (manual only) | POSTED | VOIDED
 CREATE TABLE IF NOT EXISTS journals (
@@ -475,6 +505,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_source_tx
   ON statement_lines(source_provider, source_transaction_id)
   WHERE source_provider IS NOT NULL AND source_transaction_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_reconciliations_statement ON reconciliations(statement_line_id, unreconciled_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_connection_provider
+  ON bank_feed_connections(provider, provider_user_id, provider_connection_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_link_provider_account
+  ON bank_feed_account_links(connection_id, provider_account_id);
 `;
 
 const DEFAULT_SETTINGS = {
@@ -539,6 +573,38 @@ function migrate(db) {
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_source_tx
     ON statement_lines(source_provider, source_transaction_id)
     WHERE source_provider IS NOT NULL AND source_transaction_id IS NOT NULL`);
+  db.exec(`CREATE TABLE IF NOT EXISTS bank_feed_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    provider_user_id TEXT DEFAULT '',
+    provider_connection_id TEXT DEFAULT '',
+    institution_name TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    consent_status TEXT NOT NULL DEFAULT 'unknown',
+    consent_expires_at TEXT,
+    last_sync_at TEXT,
+    last_error TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS bank_feed_account_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id INTEGER NOT NULL REFERENCES bank_feed_connections(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_account_id TEXT NOT NULL,
+    provider_account_name TEXT DEFAULT '',
+    provider_account_number TEXT DEFAULT '',
+    provider_account_type TEXT DEFAULT '',
+    bank_account_id INTEGER NOT NULL REFERENCES accounts(id),
+    sync_cursor TEXT DEFAULT '',
+    last_sync_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_connection_provider
+    ON bank_feed_connections(provider, provider_user_id, provider_connection_id)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_link_provider_account
+    ON bank_feed_account_links(connection_id, provider_account_id)`);
   // System accounts added after first release (no-op on fresh DBs).
   const have = new Set(db.prepare('SELECT code FROM accounts').all().map(r => r.code));
   if (have.size) {

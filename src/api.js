@@ -14,6 +14,7 @@ const expenses = require('./services/expenses');
 const assets = require('./services/assets');
 const projects = require('./services/projects');
 const payroll = require('./services/payroll');
+const bankFeedConnections = require('./services/bank-feed/connections');
 
 // ---------- contacts ----------
 const contacts = {
@@ -303,6 +304,11 @@ const METHODS = {
   'bank.reconciliationHistory': (db, a) => bank.reconciliationHistory(db, a.statementLineId),
   'bank.rules.list': (db) => require('./services/reconciliation/rules').listRules(db),
   'bank.rules.save': (db, a) => require('./services/reconciliation/rules').saveRule(db, a),
+  'bankFeed.connections': (db) => bankFeedConnections.listConnections(db),
+  'bankFeed.accountLinks': (db) => bankFeedConnections.listAccountLinks(db),
+  'bankFeed.upsertConnection': (db, a) => bankFeedConnections.upsertConnection(db, a),
+  'bankFeed.mapAccount': (db, a) => bankFeedConnections.mapAccount(db, a),
+  'bankFeed.disconnectLocalMapping': (db, a) => bankFeedConnections.disconnectLocalMapping(db, a),
 
   'journals.list': journals.list,
   'journals.get': journals.get,

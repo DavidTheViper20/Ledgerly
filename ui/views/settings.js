@@ -5,6 +5,17 @@ VIEWS.settingsView = async function (main) {
   const taxRates = STATE.taxRates;
   let orgs = [];
   try { orgs = await window.ledgerly.orgs('list'); } catch { /* env-pinned db */ }
+  let feed = { configured: false, connections: [], accountLinks: [] };
+  try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
+  const feedStatusBadge = feed.configured ? badge('ACTIVE') : badge('PAUSED');
+  const feedLinksHtml = (feed.accountLinks || []).map(l => `
+    <tr>
+      <td>${esc(l.provider_account_name || l.provider_account_id)}</td>
+      <td>${esc(l.bank_account_name || '')}</td>
+      <td>${esc(l.institution_name || '')}</td>
+      <td>${l.last_sync_at ? esc(new Date(l.last_sync_at).toLocaleString()) : 'Not synced'}</td>
+      <td><button class="btn small danger btn-feed-unlink" data-id="${l.id}">Remove</button></td>
+    </tr>`).join('');
 
   main.innerHTML = `
     <div class="page-head"><h1>Settings</h1></div>
@@ -79,12 +90,20 @@ VIEWS.settingsView = async function (main) {
         </div>
 
         <div class="card">
-          <h2>Bank feed settings</h2>
-          <form id="bank-feed-form">
-            <label class="field">Basiq server token<input name="basiq_server_token" type="password" value="${esc(s.basiq_server_token || '')}" /></label>
-            <label class="field">Basiq user ID<input name="basiq_user_id" value="${esc(s.basiq_user_id || '')}" /></label>
-            <button class="btn primary" type="submit">Save bank feed settings</button>
-          </form>
+          <div class="doc-head">
+            <h2>Bank feeds</h2>
+            ${feedStatusBadge}
+          </div>
+          <div class="btn-row" style="margin-bottom:10px">
+            <button class="btn primary" id="btn-bank-feed-connect" ${feed.configured ? '' : 'disabled title="Set LEDGERLY_BASIQ_API_KEY on the backend"'}>Connect bank account</button>
+            <button class="btn" id="btn-bank-feed-manage" ${(feed.connections || []).length ? '' : 'disabled'}>Manage consent</button>
+          </div>
+          ${(feed.accountLinks || []).length ? `
+            <table class="data">
+              <thead><tr><th>Provider account</th><th>Ledgerly account</th><th>Institution</th><th>Last sync</th><th></th></tr></thead>
+              <tbody>${feedLinksHtml}</tbody>
+            </table>` : '<div class="empty">No linked bank feeds</div>'}
+          ${feed.configured ? '' : '<div class="meta" style="margin-top:8px;color:var(--ink-soft);font-size:12.5px">Broker not configured</div>'}
         </div>
 
         <div class="card" id="ai-card">
@@ -284,12 +303,25 @@ VIEWS.settingsView = async function (main) {
     } catch (e) { showError(e); }
   });
 
-  document.getElementById('bank-feed-form').addEventListener('submit', async (ev) => {
-    ev.preventDefault();
+  document.getElementById('btn-bank-feed-connect')?.addEventListener('click', async () => {
     try {
-      await api('settings.update', Object.fromEntries(new FormData(ev.target).entries()));
-      toast('Bank feed settings saved', 'success');
-      loadRefData();
+      await window.ledgerly.bankFeed('startConnect', {});
+      toast('Bank consent opened', 'success');
+      VIEWS.settingsView(main);
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('btn-bank-feed-manage')?.addEventListener('click', async () => {
+    try {
+      await window.ledgerly.bankFeed('manageConsent', {});
+      toast('Consent management opened', 'success');
+    } catch (e) { showError(e); }
+  });
+  on(main, '.btn-feed-unlink', 'click', async (ev) => {
+    if (!confirm('Remove this local bank feed mapping? Imported and reconciled accounting history stays in Ledgerly.')) return;
+    try {
+      await window.ledgerly.bankFeed('disconnectLocalMapping', { linkId: Number(ev.target.dataset.id) });
+      toast('Bank feed mapping removed', 'success');
+      VIEWS.settingsView(main);
     } catch (e) { showError(e); }
   });
 

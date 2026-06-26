@@ -87,6 +87,19 @@ manual entry, demo feed sync, or provider feeds. A statement line does not chang
 the accounting ledger until it is matched to an existing transaction or used to
 create a spend, receive, transfer, or split transaction during reconciliation.
 
+## Secure bank feed connection
+
+The live Basiq connection flow is broker-backed. Put the Basiq API key in the
+server-side Electron/main-process environment, not in Settings:
+
+```bash
+LEDGERLY_BASIQ_API_KEY=your_basiq_api_key npm start
+```
+
+Then use Bank accounts -> Connect bank account, complete Basiq consent in the
+system browser, map the returned provider account to a Ledgerly bank account, and
+sync. The renderer never receives the Basiq API key or server access token.
+
 ## Getting started
 
 Requires [Node.js](https://nodejs.org) 22.13+ (uses the built-in `node:sqlite` module —

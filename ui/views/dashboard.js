@@ -89,6 +89,8 @@ VIEWS.setup = async function (main, params = {}) {
   // current org untouched until the form is submitted, so Back is safe.
   const addingNew = params.new === '1' && (STATE.settings.setup_complete || '0') === '1';
   const s = addingNew ? {} : STATE.settings;
+  let feed = { configured: false };
+  try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
   const e = (v) => esc(v || '');
   main.innerHTML = `
     <div class="setup-wrap">
@@ -125,6 +127,11 @@ VIEWS.setup = async function (main, params = {}) {
             Set up for Australia: 10% GST tax rates, financial year ending 30 June, BAS reporting
             and a standard chart of accounts are ready to go. Everything can be changed later in Settings.
           </p>
+          ${addingNew ? '' : `
+            <label class="field" style="gap:8px;flex-direction:row;align-items:center">
+              <input type="checkbox" name="setup_connect_bank" value="1" ${feed.configured ? '' : 'disabled'} style="width:auto" />
+              <span>Connect a bank account after setup</span>
+            </label>`}
           <div class="btn-row">
             <button class="btn primary" type="submit">${addingNew ? 'Create organisation' : 'Start using Ledgerly'}</button>
             ${addingNew ? '<button class="btn" type="button" id="setup-back">← Back</button>' : ''}
@@ -139,6 +146,8 @@ VIEWS.setup = async function (main, params = {}) {
     ev.preventDefault();
     const f = new FormData(ev.target);
     const kv = Object.fromEntries(f.entries());
+    const connectBank = kv.setup_connect_bank === '1';
+    delete kv.setup_connect_bank;
     if (!kv.org_name.trim()) return toast('Organisation name is required', 'error');
     kv.fy_end_day = kv.fy_end_month === '2' ? '28' : ['4', '6', '9', '11'].includes(kv.fy_end_month) ? '30' : '31';
     try {
@@ -152,6 +161,11 @@ VIEWS.setup = async function (main, params = {}) {
       kv.setup_complete = '1';
       await api('settings.update', kv);
       toast('Welcome to Ledgerly!', 'success');
+      if (connectBank) {
+        try { await window.ledgerly.bankFeed('startConnect', { email: kv.org_email || '' }); } catch (e) { showError(e); }
+        navigate('#/bank');
+        return;
+      }
       navigate('#/dashboard');
     } catch (e) { showError(e); }
   });
