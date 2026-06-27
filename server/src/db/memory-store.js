@@ -34,14 +34,54 @@ function publicDevice(device) {
   };
 }
 
+function publicBankProviderUser(row) {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    provider: row.provider,
+    providerUserId: row.providerUserId,
+  };
+}
+
+function publicBankConnection(row) {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    provider: row.provider,
+    providerUserId: row.providerUserId,
+    providerConnectionId: row.providerConnectionId,
+    institutionName: row.institutionName,
+    consentStatus: row.consentStatus,
+    consentExpiresAt: row.consentExpiresAt,
+    revokedAt: row.revokedAt,
+  };
+}
+
+function publicAuditEvent(row) {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    userId: row.userId,
+    eventType: row.eventType,
+    metadata: row.metadata,
+    createdAt: row.createdAt,
+  };
+}
+
 function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
   const users = new Map();
   const orgs = new Map();
   const memberships = [];
   const devices = new Map();
+  const providerUsers = new Map();
+  const bankConnections = new Map();
+  const auditEvents = [];
   let userSeq = 1;
   let orgSeq = 1;
   let deviceSeq = 1;
+  let providerUserSeq = 1;
+  let connectionSeq = 1;
+  let auditSeq = 1;
 
   function upsertUserFromClaims(claims) {
     if (!claims.sub) throw new Error('Token subject is required');
@@ -96,6 +136,13 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
     return memberships.find(m => m.userId === userId && m.organizationId === organizationId) || null;
   }
 
+  function setMembershipRole({ userId, organizationId, role }) {
+    const membership = membershipFor(userId, organizationId);
+    if (!membership) throw new Error('Organization membership required');
+    membership.role = role;
+    return { role };
+  }
+
   function organizationFor(userId, organizationId) {
     const membership = membershipFor(userId, organizationId);
     if (!membership) return null;
@@ -128,14 +175,124 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
     return publicDevice(device);
   }
 
+  function getBankProviderUser({ organizationId, provider }) {
+    const row = providerUsers.get(`${organizationId}:${provider}`);
+    return row ? publicBankProviderUser(row) : null;
+  }
+
+  function upsertBankProviderUser({ organizationId, provider, providerUserId }) {
+    const key = `${organizationId}:${provider}`;
+    let row = providerUsers.get(key);
+    if (!row) {
+      row = {
+        id: makeId('bpu', providerUserSeq++),
+        organizationId,
+        provider,
+        providerUserId,
+        createdAt: now(),
+      };
+      providerUsers.set(key, row);
+    } else {
+      row.providerUserId = providerUserId;
+    }
+    return publicBankProviderUser(row);
+  }
+
+  function upsertBankFeedConnection({
+    organizationId,
+    provider = 'basiq',
+    providerUserId,
+    providerConnectionId = '',
+    institutionName = '',
+    consentStatus = 'pending',
+    consentExpiresAt = null,
+    revokedAt = null,
+  }) {
+    const key = `${organizationId}:${provider}:${providerUserId}:${providerConnectionId}`;
+    let row = bankConnections.get(key);
+    if (!row) {
+      row = {
+        id: makeId('bfc', connectionSeq++),
+        organizationId,
+        provider,
+        providerUserId,
+        providerConnectionId,
+        institutionName,
+        consentStatus,
+        consentExpiresAt,
+        revokedAt,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      bankConnections.set(key, row);
+    } else {
+      row.institutionName = institutionName || row.institutionName;
+      row.consentStatus = consentStatus || row.consentStatus;
+      row.consentExpiresAt = consentExpiresAt || row.consentExpiresAt;
+      row.revokedAt = revokedAt;
+      row.updatedAt = now();
+    }
+    return publicBankConnection(row);
+  }
+
+  function firstBankFeedConnection({ organizationId, provider = 'basiq' }) {
+    for (const row of bankConnections.values()) {
+      if (row.organizationId === organizationId && row.provider === provider && !row.revokedAt) {
+        return publicBankConnection(row);
+      }
+    }
+    return null;
+  }
+
+  function revokeBankFeedConnection({ organizationId, providerConnectionId }) {
+    for (const row of bankConnections.values()) {
+      if (row.organizationId === organizationId && row.providerConnectionId === providerConnectionId) {
+        row.revokedAt = now();
+        row.consentStatus = 'revoked';
+        row.updatedAt = now();
+        return publicBankConnection(row);
+      }
+    }
+    return null;
+  }
+
+  function addAuditEvent({ organizationId, userId, deviceId = null, eventType, metadata = {} }) {
+    const event = {
+      id: makeId('aud', auditSeq++),
+      organizationId,
+      userId,
+      deviceId,
+      eventType,
+      metadata,
+      createdAt: now(),
+    };
+    auditEvents.push(event);
+    return publicAuditEvent(event);
+  }
+
+  function listAuditEventsForUser(userId) {
+    const orgIds = new Set(memberships.filter(m => m.userId === userId).map(m => m.organizationId));
+    return auditEvents
+      .filter(e => orgIds.has(e.organizationId))
+      .map(publicAuditEvent);
+  }
+
   return {
     upsertUserFromClaims,
     listOrganizationsForUser,
     createOrganization,
     membershipFor,
+    setMembershipRole,
     organizationFor,
     registerDevice,
     revokeDevice,
+    getBankProviderUser,
+    upsertBankProviderUser,
+    upsertBankFeedConnection,
+    firstBankFeedConnection,
+    revokeBankFeedConnection,
+    addAuditEvent,
+    listAuditEventsForUser,
   };
 }
 

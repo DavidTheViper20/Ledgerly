@@ -6,6 +6,7 @@ const { loadConfig } = require('./config');
 const { createRemoteJwksVerifier, verifyBearerAuth } = require('./auth/verify-token');
 const { can } = require('./auth/roles');
 const { createMemoryStore } = require('./db/memory-store');
+const { createBasiqClient } = require('./providers/basiq-client');
 
 function sendJson(res, status, body, headers = {}) {
   const payload = JSON.stringify(body);
@@ -56,10 +57,33 @@ function requireMembership(store, userId, organizationId, permission) {
   return membership;
 }
 
+async function ensureBasiqUser({ store, basiqClient, organizationId, email, mobile }) {
+  const existing = store.getBankProviderUser({ organizationId, provider: 'basiq' });
+  if (existing) return existing;
+  const user = await basiqClient.createUser({ email, mobile });
+  return store.upsertBankProviderUser({
+    organizationId,
+    provider: 'basiq',
+    providerUserId: user.id,
+  });
+}
+
+function connectionOrError(store, organizationId) {
+  const connection = store.firstBankFeedConnection({ organizationId, provider: 'basiq' });
+  if (!connection) {
+    const err = new Error('Bank feed connection not found');
+    err.status = 404;
+    err.code = 'not_found';
+    throw err;
+  }
+  return connection;
+}
+
 function createServer({
   config = loadConfig(),
   logger = console,
   store = createMemoryStore(),
+  basiqClient = createBasiqClient({ apiKey: config.basiqApiKey }),
   verifyToken = createRemoteJwksVerifier({
     issuer: config.oidcIssuer,
     audience: config.oidcAudience,
@@ -105,6 +129,108 @@ function createServer({
             const body = await readJson(req);
             const created = store.createOrganization({ userId: user.id, name: body.name });
             sendJson(res, 201, created);
+            return;
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/connect/start') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const providerUser = await ensureBasiqUser({
+              store,
+              basiqClient,
+              organizationId,
+              email: body.email || user.email,
+              mobile: body.mobile || '',
+            });
+            const consent = await basiqClient.createConsentUrl({
+              userId: providerUser.providerUserId,
+              action: 'connect',
+            });
+            const connection = store.upsertBankFeedConnection({
+              organizationId,
+              provider: 'basiq',
+              providerUserId: providerUser.providerUserId,
+              consentStatus: 'pending',
+            });
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              eventType: 'bank_feed.consent_started',
+              metadata: { provider: 'basiq' },
+            });
+            sendJson(res, 201, {
+              provider: 'basiq',
+              connection,
+              consentUrl: consent.url,
+            });
+            return;
+          }
+
+          if (req.method === 'GET' && url.pathname === '/v1/bank-feeds/provider-accounts') {
+            const organizationId = url.searchParams.get('organizationId');
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const providerUser = store.getBankProviderUser({ organizationId, provider: 'basiq' });
+            if (!providerUser) {
+              sendJson(res, 404, errorBody('not_found', 'Bank provider user not found'));
+              return;
+            }
+            sendJson(res, 200, {
+              accounts: await basiqClient.listAccounts({ userId: providerUser.providerUserId }),
+            });
+            return;
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/manage') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const connection = connectionOrError(store, organizationId);
+            const consent = await basiqClient.createConsentUrl({ userId: connection.providerUserId, action: 'manage' });
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              eventType: 'bank_feed.consent_manage_started',
+              metadata: { provider: 'basiq' },
+            });
+            sendJson(res, 200, { provider: 'basiq', consentUrl: consent.url });
+            return;
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/reconnect') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const connection = connectionOrError(store, organizationId);
+            const consent = await basiqClient.createConsentUrl({ userId: connection.providerUserId, action: 'reconnect' });
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              eventType: 'bank_feed.consent_reconnect_started',
+              metadata: { provider: 'basiq' },
+            });
+            sendJson(res, 200, { provider: 'basiq', consentUrl: consent.url });
+            return;
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/revoke') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            await basiqClient.revokeConnection({ providerConnectionId: body.providerConnectionId || '' });
+            store.revokeBankFeedConnection({ organizationId, providerConnectionId: body.providerConnectionId || '' });
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              eventType: 'bank_feed.consent_revoked',
+              metadata: { provider: 'basiq' },
+            });
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+
+          if (req.method === 'GET' && url.pathname === '/v1/audit-events') {
+            sendJson(res, 200, { events: store.listAuditEventsForUser(user.id) });
             return;
           }
 
