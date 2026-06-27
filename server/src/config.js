@@ -20,6 +20,10 @@ function parseCorsOrigins(value) {
     .filter(Boolean);
 }
 
+function defaultJwksUrl(issuer) {
+  return `${String(issuer || '').replace(/\/+$/, '')}/.well-known/jwks.json`;
+}
+
 function loadConfig(env = process.env) {
   const missing = REQUIRED_KEYS.filter(key => !valueOf(env, key));
   if (missing.length) throw new Error(`Missing required config: ${missing.join(', ')}`);
@@ -38,6 +42,7 @@ function loadConfig(env = process.env) {
     databaseUrl: valueOf(env, 'DATABASE_URL'),
     oidcIssuer: valueOf(env, 'OIDC_ISSUER'),
     oidcAudience: valueOf(env, 'OIDC_AUDIENCE'),
+    oidcJwksUrl: valueOf(env, 'OIDC_JWKS_URL') || defaultJwksUrl(valueOf(env, 'OIDC_ISSUER')),
     basiqApiKey: valueOf(env, 'BASIQ_API_KEY'),
     corsOrigins,
   });
