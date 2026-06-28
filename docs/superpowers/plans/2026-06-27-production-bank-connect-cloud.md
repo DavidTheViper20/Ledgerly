@@ -330,24 +330,24 @@ Desktop additions:
 
 ### Phase 5: Desktop Cloud Bank-Feed Client
 
-- [ ] Add `/src/services/cloud/client.js` with a narrow HTTPS client.
-- [ ] Replace direct Electron Basiq broker calls in `/electron/main.js` with Ledgerly Cloud calls.
-- [ ] Keep `fakeSync` for demos.
-- [ ] Keep direct `basiqSync` disabled except explicit development mode.
-- [ ] `bankFeed('startConnect')` calls Cloud, then opens the returned consent URL.
-- [ ] `bankFeed('listProviderAccounts')` calls Cloud.
-- [ ] `bankFeed('syncLinkedAccount')` calls Cloud and imports returned transactions locally.
-- [ ] Tests:
+- [x] Add `/src/services/cloud/client.js` with a narrow HTTPS client.
+- [x] Replace direct Electron Basiq broker calls in `/electron/main.js` with Ledgerly Cloud calls.
+- [x] Keep `fakeSync` for demos.
+- [x] Keep direct `basiqSync` disabled except explicit development mode.
+- [x] `bankFeed('startConnect')` calls Cloud, then opens the returned consent URL.
+- [x] `bankFeed('listProviderAccounts')` calls Cloud.
+- [x] `bankFeed('syncLinkedAccount')` calls Cloud and imports returned transactions locally.
+- [x] Tests:
   - Renderer cannot request tokens.
   - Desktop client attaches user session, not provider credentials.
   - Cloud sync result imports into `statement_lines` and dedupes provider transaction IDs.
-- [ ] Commit: `feat: connect desktop bank feeds through cloud`.
+- [x] Commit: implemented with Phase 6 as `feat: connect desktop bank feeds through cloud`.
 
 ### Phase 6: Account Mapping And Sync
 
-- [ ] Cloud stores provider account metadata and desktop-local mapping IDs.
-- [ ] Desktop keeps local `bank_feed_account_links` for UI speed and local sync state.
-- [ ] Sync endpoint returns normalized transactions:
+- [x] Cloud stores provider account metadata and desktop-local mapping IDs.
+- [x] Desktop keeps local `bank_feed_account_links` for UI speed and local sync state.
+- [x] Sync endpoint returns normalized transactions:
   - `provider`
   - `sourceAccountId`
   - `sourceTransactionId`
@@ -356,14 +356,14 @@ Desktop additions:
   - `amountCents`
   - `postedAt`
   - `raw`
-- [ ] Desktop imports via existing provider-neutral importer.
-- [ ] Add idempotency keys for sync runs.
-- [ ] Add sync run audit history.
-- [ ] Tests:
+- [x] Desktop imports via existing provider-neutral importer.
+- [x] Add idempotency keys for sync runs.
+- [x] Add sync run audit history.
+- [x] Tests:
   - Duplicate provider transaction IDs do not duplicate statement lines.
   - Partial provider failure records a failed sync run.
   - Mapping one provider account to another local bank account updates mapping safely.
-- [ ] Commit: `feat: add production bank feed sync pipeline`.
+- [x] Commit: implemented with Phase 5 as `feat: connect desktop bank feeds through cloud`.
 
 ### Phase 7: Consent And CDR Dashboard
 

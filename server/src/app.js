@@ -79,6 +79,17 @@ function connectionOrError(store, organizationId) {
   return connection;
 }
 
+function accountOrError(store, organizationId, providerAccountId) {
+  const found = store.bankFeedAccountByProvider({ organizationId, providerAccountId });
+  if (!found) {
+    const err = new Error('Bank feed account link not found');
+    err.status = 404;
+    err.code = 'not_found';
+    throw err;
+  }
+  return found;
+}
+
 function createServer({
   config = loadConfig(),
   logger = console,
@@ -167,6 +178,19 @@ function createServer({
             return;
           }
 
+          if (req.method === 'GET' && url.pathname === '/v1/bank-feeds/status') {
+            const organizationId = url.searchParams.get('organizationId');
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            sendJson(res, 200, {
+              provider: 'basiq',
+              configured: true,
+              connections: store.listBankFeedConnections({ organizationId, provider: 'basiq' }),
+              accountLinks: store.listBankFeedAccounts({ organizationId }),
+              syncRuns: store.listBankFeedSyncRuns({ organizationId }),
+            });
+            return;
+          }
+
           if (req.method === 'GET' && url.pathname === '/v1/bank-feeds/provider-accounts') {
             const organizationId = url.searchParams.get('organizationId');
             requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
@@ -179,6 +203,121 @@ function createServer({
               accounts: await basiqClient.listAccounts({ userId: providerUser.providerUserId }),
             });
             return;
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/account-links') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const connection = body.connectionId
+              ? store.bankFeedConnectionById({ organizationId, connectionId: body.connectionId })
+              : connectionOrError(store, organizationId);
+            if (!connection) {
+              sendJson(res, 404, errorBody('not_found', 'Bank feed connection not found'));
+              return;
+            }
+            const existed = store.bankFeedAccountByProvider({
+              organizationId,
+              providerAccountId: body.providerAccountId,
+            });
+            const account = store.upsertBankFeedAccount({
+              connectionId: connection.id,
+              providerAccountId: body.providerAccountId,
+              providerAccountName: body.providerAccountName || '',
+              providerAccountNumber: body.providerAccountNumber || '',
+              providerAccountType: body.providerAccountType || '',
+              desktopBankAccountLocalId: body.desktopBankAccountLocalId || '',
+              syncCursor: body.syncCursor || '',
+            });
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              eventType: 'bank_feed.account_mapped',
+              metadata: {
+                provider: 'basiq',
+                providerAccountId: account.providerAccountId,
+                desktopBankAccountLocalId: account.desktopBankAccountLocalId,
+              },
+            });
+            sendJson(res, existed ? 200 : 201, { provider: 'basiq', account });
+            return;
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/sync') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const { account, connection } = accountOrError(store, organizationId, body.providerAccountId);
+            const idempotencyKey = req.headers['idempotency-key'] || body.idempotencyKey || '';
+            const started = store.startBankFeedSyncRun({
+              organizationId,
+              bankFeedAccountId: account.id,
+              idempotencyKey,
+            });
+            if (started.replayed) {
+              const result = started.syncRun.result || {
+                provider: 'basiq',
+                account,
+                transactions: [],
+              };
+              sendJson(res, 200, {
+                ...result,
+                syncRun: started.syncRun,
+                replayed: true,
+              });
+              return;
+            }
+            try {
+              const transactions = await basiqClient.listTransactions({
+                userId: connection.providerUserId,
+                providerAccountId: account.providerAccountId,
+                syncCursor: account.syncCursor || '',
+              });
+              const result = {
+                provider: 'basiq',
+                account,
+                transactions,
+              };
+              const syncRun = store.finishBankFeedSyncRun({
+                syncRunId: started.syncRun.id,
+                status: 'succeeded',
+                importedCount: transactions.length,
+                skippedCount: 0,
+                result,
+              });
+              store.addAuditEvent({
+                organizationId,
+                userId: user.id,
+                eventType: 'bank_feed.sync_succeeded',
+                metadata: {
+                  provider: 'basiq',
+                  providerAccountId: account.providerAccountId,
+                  transactionCount: transactions.length,
+                },
+              });
+              sendJson(res, 200, {
+                ...result,
+                syncRun,
+              });
+              return;
+            } catch (err) {
+              store.finishBankFeedSyncRun({
+                syncRunId: started.syncRun.id,
+                status: 'failed',
+                errorMessage: err.message,
+              });
+              store.addAuditEvent({
+                organizationId,
+                userId: user.id,
+                eventType: 'bank_feed.sync_failed',
+                metadata: {
+                  provider: 'basiq',
+                  providerAccountId: account.providerAccountId,
+                  errorCode: err.code || 'sync_failed',
+                },
+              });
+              throw err;
+            }
           }
 
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/manage') {
@@ -274,6 +413,10 @@ function createServer({
         }
         if (err.status === 403) {
           sendJson(res, 403, errorBody(err.code || 'forbidden', err.message));
+          return;
+        }
+        if (err.status) {
+          sendJson(res, err.status, errorBody(err.code || 'request_failed', err.message));
           return;
         }
         if (/required|Invalid JSON body/.test(err.message)) {

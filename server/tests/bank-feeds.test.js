@@ -41,6 +41,19 @@ function fakeBasiqClient() {
         providerAccountType: 'transaction',
       }];
     },
+    async listTransactions(input) {
+      calls.push(['listTransactions', input]);
+      return [{
+        sourceAccountId: input.providerAccountId,
+        sourceTransactionId: 'tx-1',
+        date: '2026-06-28',
+        payee: 'Coffee Supplies',
+        description: 'Coffee Supplies',
+        reference: 'POS123',
+        amountCents: -1299,
+        postedAt: '2026-06-28T00:00:00.000Z',
+      }];
+    },
     async revokeConnection(input) {
       calls.push(['revokeConnection', input]);
       return { ok: true };
@@ -64,12 +77,13 @@ async function withServer({ role = 'owner', basiqClient = fakeBasiqClient() } = 
   }
 }
 
-async function jsonFetch(baseUrl, path, { method = 'GET', body } = {}) {
+async function jsonFetch(baseUrl, path, { method = 'GET', body, headers = {} } = {}) {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
       Authorization: 'Bearer test-token',
       ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...headers,
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
@@ -161,5 +175,143 @@ test('bank feeds: manage, reconnect, and revoke consent are audited and return n
       'bank_feed.consent_revoked',
     ]);
     assert.doesNotMatch(JSON.stringify({ manage: manage.body, reconnect: reconnect.body, revoke: revoke.body }), /basiq-secret-key|server-token/);
+  });
+});
+
+test('bank feeds: maps provider accounts and status returns cloud account links', async () => {
+  await withServer({}, async ({ baseUrl, organizationId }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+
+    const mapped = await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        providerAccountName: 'Business Everyday',
+        providerAccountNumber: '123456789',
+        providerAccountType: 'transaction',
+        desktopBankAccountLocalId: '17',
+      },
+    });
+    assert.equal(mapped.res.status, 201);
+    assert.equal(mapped.body.account.providerAccountId, 'acc-1');
+    assert.equal(mapped.body.account.providerAccountNumberLast4, '6789');
+    assert.equal(mapped.body.account.desktopBankAccountLocalId, '17');
+
+    const remapped = await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        providerAccountName: 'Business Everyday',
+        desktopBankAccountLocalId: '23',
+      },
+    });
+    assert.equal(remapped.res.status, 200);
+    assert.equal(remapped.body.account.id, mapped.body.account.id);
+    assert.equal(remapped.body.account.desktopBankAccountLocalId, '23');
+
+    const status = await jsonFetch(baseUrl, `/v1/bank-feeds/status?organizationId=${encodeURIComponent(organizationId)}`);
+    assert.equal(status.res.status, 200);
+    assert.equal(status.body.provider, 'basiq');
+    assert.equal(status.body.configured, true);
+    assert.equal(status.body.accountLinks[0].desktopBankAccountLocalId, '23');
+  });
+});
+
+test('bank feeds: sync returns normalized transactions and replays idempotent sync runs', async () => {
+  await withServer({}, async ({ baseUrl, organizationId, basiqClient }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+    await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        providerAccountName: 'Business Everyday',
+        desktopBankAccountLocalId: '17',
+      },
+    });
+
+    const first = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'sync-acc-1-2026-06-28' },
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+    const second = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'sync-acc-1-2026-06-28' },
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+
+    assert.equal(first.res.status, 200);
+    assert.equal(first.body.syncRun.status, 'succeeded');
+    assert.deepEqual(first.body.transactions, [{
+      sourceAccountId: 'acc-1',
+      sourceTransactionId: 'tx-1',
+      date: '2026-06-28',
+      payee: 'Coffee Supplies',
+      description: 'Coffee Supplies',
+      reference: 'POS123',
+      amountCents: -1299,
+      postedAt: '2026-06-28T00:00:00.000Z',
+    }]);
+    assert.equal(second.res.status, 200);
+    assert.equal(second.body.replayed, true);
+    assert.equal(second.body.syncRun.id, first.body.syncRun.id);
+    assert.equal(basiqClient.calls.filter(([name]) => name === 'listTransactions').length, 1);
+    assert.deepEqual(basiqClient.calls.at(-1), ['listTransactions', {
+      userId: 'basiq-user-1',
+      providerAccountId: 'acc-1',
+      syncCursor: '',
+    }]);
+  });
+});
+
+test('bank feeds: failed sync run is audited without exposing provider secrets', async () => {
+  const basiqClient = fakeBasiqClient();
+  basiqClient.listTransactions = async (input) => {
+    basiqClient.calls.push(['listTransactions', input]);
+    const err = new Error('Basiq list transactions failed: 502 upstream unavailable');
+    err.status = 502;
+    err.code = 'basiq_upstream_error';
+    throw err;
+  };
+
+  await withServer({ basiqClient }, async ({ baseUrl, organizationId }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+    await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        providerAccountName: 'Business Everyday',
+        desktopBankAccountLocalId: '17',
+      },
+    });
+
+    const failed = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+    assert.equal(failed.res.status, 502);
+    assert.deepEqual(failed.body, {
+      error: {
+        code: 'basiq_upstream_error',
+        message: 'Basiq list transactions failed: 502 upstream unavailable',
+      },
+    });
+
+    const audit = await jsonFetch(baseUrl, '/v1/audit-events');
+    assert.equal(audit.body.events.at(-1).eventType, 'bank_feed.sync_failed');
+    assert.doesNotMatch(JSON.stringify(failed.body), /basiq-secret-key|server-token/);
   });
 });

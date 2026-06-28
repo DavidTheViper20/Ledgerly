@@ -6,8 +6,8 @@ const fs = require('node:fs');
 
 const dbm = require('../src/db');
 const api = require('../src/api');
-const bankFeedFlow = require('../src/services/bank-feed/flow');
-const { createBasiqBroker } = require('../src/services/bank-feed/basiq-broker');
+const cloudBankFeedFlow = require('../src/services/cloud/bank-feed-flow');
+const { createCloudClient } = require('../src/services/cloud/client');
 
 let db;
 let win;
@@ -192,17 +192,27 @@ app.whenReady().then(() => {
     }
   });
 
-  const basiqBroker = createBasiqBroker({
-    apiKey: process.env.LEDGERLY_BASIQ_API_KEY || process.env.BASIQ_API_KEY || '',
+  const bankFeedCloudClient = createCloudClient({
+    baseUrl: process.env.LEDGERLY_CLOUD_URL || '',
+    sessionToken: process.env.LEDGERLY_CLOUD_TOKEN || process.env.LEDGERLY_SESSION_TOKEN || '',
+    organizationId: process.env.LEDGERLY_CLOUD_ORG_ID || '',
   });
+  function cloudOrgId(args = {}) {
+    const settings = api.call(db, 'settings.all', {});
+    return args.organizationId || settings.cloud_organization_id || process.env.LEDGERLY_CLOUD_ORG_ID || '';
+  }
   const BANK_FEED_METHODS = {
     async status() {
-      return bankFeedFlow.status(db, { broker: basiqBroker });
+      return cloudBankFeedFlow.status(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(),
+      });
     },
     async startConnect(a) {
       const settings = api.call(db, 'settings.all', {});
-      return bankFeedFlow.startConnect(db, {
-        broker: basiqBroker,
+      return cloudBankFeedFlow.startConnect(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
         email: a.email || settings.org_email || '',
         mobile: a.mobile || '',
         action: a.action || 'connect',
@@ -210,17 +220,31 @@ app.whenReady().then(() => {
       });
     },
     async listProviderAccounts(a) {
-      return bankFeedFlow.listProviderAccounts(db, { broker: basiqBroker, userId: a.userId });
+      return cloudBankFeedFlow.listProviderAccounts(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
+      });
     },
     async mapProviderAccount(a) {
-      return bankFeedFlow.mapProviderAccount(db, a);
+      return cloudBankFeedFlow.mapProviderAccount(db, {
+        ...a,
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
+      });
     },
     async syncLinkedAccount(a) {
-      return bankFeedFlow.syncLinkedAccount(db, { broker: basiqBroker, linkId: a.linkId, bankAccountId: a.bankAccountId });
+      return cloudBankFeedFlow.syncLinkedAccount(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
+        linkId: a.linkId,
+        bankAccountId: a.bankAccountId,
+        idempotencyKey: a.idempotencyKey,
+      });
     },
     async manageConsent(a) {
-      return bankFeedFlow.manageConsent(db, {
-        broker: basiqBroker,
+      return cloudBankFeedFlow.manageConsent(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
         action: a.action || 'manage',
         openExternal: (url) => shell.openExternal(url),
       });

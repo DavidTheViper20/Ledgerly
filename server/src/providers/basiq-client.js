@@ -36,6 +36,34 @@ function mapBasiqAccount(account) {
   };
 }
 
+function toCents(value) {
+  if (typeof value === 'object' && value !== null) {
+    return toCents(value.amount ?? value.value ?? value.total);
+  }
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(amount * 100);
+}
+
+function dateOnly(value) {
+  return String(value || '').slice(0, 10);
+}
+
+function mapBasiqTransaction(tx, providerAccountId = '') {
+  const accountId = tx.account || tx.accountId || tx.account_id || providerAccountId;
+  return {
+    sourceAccountId: String(accountId || ''),
+    sourceTransactionId: String(tx.id || tx.transactionId || tx.transaction_id || ''),
+    date: dateOnly(tx.postDate || tx.transactionDate || tx.date || tx.created),
+    payee: tx.merchant?.name || tx.payee || tx.description || '',
+    description: tx.description || tx.summary || tx.payee || '',
+    reference: tx.reference || tx.receiptNumber || tx.class?.code || '',
+    amountCents: toCents(tx.amount),
+    postedAt: tx.postDate || tx.transactionDate || tx.date || null,
+    raw: tx,
+  };
+}
+
 function createBasiqClient({
   apiKey,
   fetch: fetchImpl = global.fetch,
@@ -125,6 +153,18 @@ function createBasiqClient({
     return (data.data || []).map(mapBasiqAccount);
   }
 
+  async function listTransactions({ userId, providerAccountId, syncCursor = '' } = {}) {
+    if (!userId) throw new Error('Basiq userId is required');
+    if (!providerAccountId) throw new Error('Basiq providerAccountId is required');
+    const params = new URLSearchParams({ filter: `account.id.eq('${providerAccountId}')` });
+    if (syncCursor) params.set('next', syncCursor);
+    const data = await authenticatedGet(
+      `/users/${encodeURIComponent(userId)}/transactions?${params.toString()}`,
+      'Basiq list transactions',
+    );
+    return (data.data || []).map(tx => mapBasiqTransaction(tx, providerAccountId));
+  }
+
   async function getJob({ jobId } = {}) {
     if (!jobId) throw new Error('Basiq jobId is required');
     return authenticatedGet(`/jobs/${encodeURIComponent(jobId)}`, 'Basiq get job');
@@ -141,6 +181,7 @@ function createBasiqClient({
     createClientToken,
     createConsentUrl,
     listAccounts,
+    listTransactions,
     getJob,
     revokeConnection,
   };
@@ -149,4 +190,5 @@ function createBasiqClient({
 module.exports = {
   createBasiqClient,
   mapBasiqAccount,
+  mapBasiqTransaction,
 };
