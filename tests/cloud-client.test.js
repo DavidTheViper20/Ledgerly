@@ -56,3 +56,32 @@ test('cloud client maps API errors to stable messages', async () => {
     /Permission denied/,
   );
 });
+
+test('cloud client supports consent revocation and deletion request without provider credentials', async () => {
+  const calls = [];
+  const client = createCloudClient({
+    baseUrl: 'https://cloud.ledgerly.test',
+    sessionToken: 'ledgerly-session-1',
+    organizationId: 'org_0001',
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return jsonResponse({ ok: true }, url.toString().includes('data-deletion') ? 202 : 200);
+    },
+  });
+
+  await client.revokeConsent({ providerConnectionId: 'conn-1' });
+  await client.requestDataDeletion({ providerAccountId: 'acc-1', reason: 'user_requested' });
+
+  assert.equal(calls[0].url, 'https://cloud.ledgerly.test/v1/bank-feeds/consent/revoke');
+  assert.equal(calls[1].url, 'https://cloud.ledgerly.test/v1/bank-feeds/data-deletion/request');
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    organizationId: 'org_0001',
+    providerConnectionId: 'conn-1',
+  });
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    organizationId: 'org_0001',
+    providerAccountId: 'acc-1',
+    reason: 'user_requested',
+  });
+  assert.doesNotMatch(JSON.stringify(calls), /basiq-secret|server-token|providerAccessToken/i);
+});

@@ -126,6 +126,27 @@ function createCloudClient({
     });
   }
 
+  function revokeConsent(input = {}) {
+    return request('/v1/bank-feeds/consent/revoke', {
+      method: 'POST',
+      body: {
+        organizationId: resolveOrganizationId(input),
+        providerConnectionId: input.providerConnectionId,
+      },
+    });
+  }
+
+  function requestDataDeletion(input = {}) {
+    return request('/v1/bank-feeds/data-deletion/request', {
+      method: 'POST',
+      body: {
+        organizationId: resolveOrganizationId(input),
+        providerAccountId: input.providerAccountId,
+        reason: input.reason,
+      },
+    });
+  }
+
   return {
     publicStatus,
     status,
@@ -134,6 +155,8 @@ function createCloudClient({
     mapProviderAccount,
     syncLinkedAccount,
     manageConsent,
+    revokeConsent,
+    requestDataDeletion,
   };
 }
 

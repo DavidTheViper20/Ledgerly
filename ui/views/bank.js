@@ -125,7 +125,7 @@ VIEWS.bankAccount = async function (main, params) {
       <button class="btn" id="btn-sync-fake">Sync demo feed</button>
       ${linkedFeed
         ? '<button class="btn" id="btn-sync-linked">Sync linked feed</button>'
-        : `<button class="btn" id="btn-connect-bank" ${feed.configured ? '' : 'disabled title="Set LEDGERLY_BASIQ_API_KEY on the backend"'}>Connect bank account</button>`}
+        : `<button class="btn" id="btn-connect-bank" ${feed.configured ? '' : 'disabled title="Connect Ledgerly Cloud first"'}>Connect bank account</button>`}
       ${!linkedFeed && hasConnection ? '<button class="btn" id="btn-map-feed">Map connected feed</button>' : ''}
       <a class="btn" href="#/bank/${id}/import">Import statement</a>
       <a class="btn" href="#/bank/spend?bank=${id}">Spend money</a>

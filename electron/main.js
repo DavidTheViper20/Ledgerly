@@ -249,6 +249,21 @@ app.whenReady().then(() => {
         openExternal: (url) => shell.openExternal(url),
       });
     },
+    async revokeConsent(a) {
+      return cloudBankFeedFlow.revokeConsent(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
+        providerConnectionId: a.providerConnectionId || '',
+      });
+    },
+    async requestDataDeletion(a) {
+      return cloudBankFeedFlow.requestDataDeletion(db, {
+        cloudClient: bankFeedCloudClient,
+        organizationId: cloudOrgId(a),
+        providerAccountId: a.providerAccountId || '',
+        reason: a.reason || 'user_requested',
+      });
+    },
     async disconnectLocalMapping(a) {
       return api.call(db, 'bankFeed.disconnectLocalMapping', a);
     },

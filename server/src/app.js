@@ -90,6 +90,15 @@ function accountOrError(store, organizationId, providerAccountId) {
   return found;
 }
 
+function consentActiveOrError(connection) {
+  if (connection.revokedAt || connection.consentStatus === 'revoked') {
+    const err = new Error('Bank feed consent is revoked');
+    err.status = 409;
+    err.code = 'consent_revoked';
+    throw err;
+  }
+}
+
 function createServer({
   config = loadConfig(),
   logger = console,
@@ -248,6 +257,7 @@ function createServer({
             const organizationId = body.organizationId;
             requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
             const { account, connection } = accountOrError(store, organizationId, body.providerAccountId);
+            consentActiveOrError(connection);
             const idempotencyKey = req.headers['idempotency-key'] || body.idempotencyKey || '';
             const started = store.startBankFeedSyncRun({
               organizationId,
@@ -318,6 +328,24 @@ function createServer({
               });
               throw err;
             }
+          }
+
+          if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/data-deletion/request') {
+            const body = await readJson(req);
+            const organizationId = body.organizationId;
+            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              eventType: 'bank_feed.data_deletion_requested',
+              metadata: {
+                provider: 'basiq',
+                providerAccountId: body.providerAccountId || '',
+                reason: body.reason || 'user_requested',
+              },
+            });
+            sendJson(res, 202, { ok: true });
+            return;
           }
 
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/manage') {

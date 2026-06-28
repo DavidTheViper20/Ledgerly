@@ -71,7 +71,7 @@ async function withServer({ role = 'owner', basiqClient = fakeBasiqClient() } = 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     const { port } = server.address();
-    await fn({ baseUrl: `http://127.0.0.1:${port}`, organizationId: created.organization.id, basiqClient });
+    await fn({ baseUrl: `http://127.0.0.1:${port}`, organizationId: created.organization.id, basiqClient, store });
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -313,5 +313,86 @@ test('bank feeds: failed sync run is audited without exposing provider secrets',
     const audit = await jsonFetch(baseUrl, '/v1/audit-events');
     assert.equal(audit.body.events.at(-1).eventType, 'bank_feed.sync_failed');
     assert.doesNotMatch(JSON.stringify(failed.body), /basiq-secret-key|server-token/);
+  });
+});
+
+test('bank feeds: revoked consent blocks sync', async () => {
+  await withServer({}, async ({ baseUrl, organizationId }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+    await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        providerAccountName: 'Business Everyday',
+        desktopBankAccountLocalId: '17',
+      },
+    });
+    await jsonFetch(baseUrl, '/v1/bank-feeds/consent/revoke', {
+      method: 'POST',
+      body: { organizationId, providerConnectionId: '' },
+    });
+
+    const sync = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+
+    assert.equal(sync.res.status, 409);
+    assert.deepEqual(sync.body, {
+      error: {
+        code: 'consent_revoked',
+        message: 'Bank feed consent is revoked',
+      },
+    });
+  });
+});
+
+test('bank feeds: redundant data deletion request is audited', async () => {
+  await withServer({}, async ({ baseUrl, organizationId }) => {
+    const deletion = await jsonFetch(baseUrl, '/v1/bank-feeds/data-deletion/request', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        reason: 'user_requested',
+      },
+    });
+    assert.equal(deletion.res.status, 202);
+    assert.deepEqual(deletion.body, { ok: true });
+
+    const audit = await jsonFetch(baseUrl, '/v1/audit-events');
+    assert.equal(audit.body.events.at(-1).eventType, 'bank_feed.data_deletion_requested');
+    assert.deepEqual(audit.body.events.at(-1).metadata, {
+      provider: 'basiq',
+      providerAccountId: 'acc-1',
+      reason: 'user_requested',
+    });
+    assert.doesNotMatch(JSON.stringify(deletion.body), /basiq-secret-key|server-token/);
+  });
+});
+
+test('bank feeds: status surfaces expired consent for reconnect dashboard state', async () => {
+  await withServer({}, async ({ baseUrl, organizationId, store }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+    store.upsertBankFeedConnection({
+      organizationId,
+      provider: 'basiq',
+      providerUserId: 'basiq-user-1',
+      consentStatus: 'expired',
+      consentExpiresAt: '2026-06-28T00:00:00.000Z',
+    });
+
+    const status = await jsonFetch(baseUrl, `/v1/bank-feeds/status?organizationId=${encodeURIComponent(organizationId)}`);
+
+    assert.equal(status.res.status, 200);
+    assert.equal(status.body.connections[0].consentStatus, 'expired');
+    assert.equal(status.body.connections[0].consentExpiresAt, '2026-06-28T00:00:00.000Z');
   });
 });

@@ -157,6 +157,16 @@ async function manageConsent(db, { cloudClient, organizationId, openExternal, ac
   };
 }
 
+async function revokeConsent(db, { cloudClient, organizationId, providerConnectionId = '' } = {}) {
+  requireConfigured(cloudClient);
+  return cloudClient.revokeConsent(compact({ organizationId, providerConnectionId }));
+}
+
+async function requestDataDeletion(db, { cloudClient, organizationId, providerAccountId = '', reason = 'user_requested' } = {}) {
+  requireConfigured(cloudClient);
+  return cloudClient.requestDataDeletion(compact({ organizationId, providerAccountId, reason }));
+}
+
 module.exports = {
   status,
   startConnect,
@@ -164,4 +174,6 @@ module.exports = {
   mapProviderAccount,
   syncLinkedAccount,
   manageConsent,
+  revokeConsent,
+  requestDataDeletion,
 };

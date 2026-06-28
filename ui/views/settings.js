@@ -7,15 +7,33 @@ VIEWS.settingsView = async function (main) {
   try { orgs = await window.ledgerly.orgs('list'); } catch { /* env-pinned db */ }
   let feed = { configured: false, connections: [], accountLinks: [] };
   try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
-  const feedStatusBadge = feed.configured ? badge('ACTIVE') : badge('PAUSED');
-  const feedLinksHtml = (feed.accountLinks || []).map(l => `
+  const cloud = feed.cloud || {};
+  const localConnections = feed.connections || [];
+  const cloudConnections = cloud.connections || [];
+  const displayConnections = cloudConnections.length ? cloudConnections : localConnections;
+  const primaryConnection = displayConnections[0] || {};
+  const hasConnection = displayConnections.length || localConnections.length;
+  const consentStatus = primaryConnection.consentStatus || primaryConnection.consent_status || (hasConnection ? 'pending' : 'not connected');
+  const consentExpiry = primaryConnection.consentExpiresAt || primaryConnection.consent_expires_at || '';
+  const connectionIdForCloud = primaryConnection.providerConnectionId || primaryConnection.provider_connection_id || '';
+  const feedStatusBadge = feed.configured ? badge(String(consentStatus).toUpperCase()) : badge(feed.cloudConfigured ? 'SETUP' : 'PAUSED');
+  const feedSetupText = feed.configured
+    ? ''
+    : (feed.setupRequired === 'organization' ? 'Cloud organisation not linked' : 'Cloud bank feeds not configured');
+  const cloudLinkByProviderId = new Map((cloud.accountLinks || []).map(l => [l.providerAccountId, l]));
+  const feedLinksHtml = (feed.accountLinks || []).map(l => {
+    const cloudLink = cloudLinkByProviderId.get(l.provider_account_id) || {};
+    const lastSync = cloudLink.lastSyncAt || l.last_sync_at;
+    return `
     <tr>
       <td>${esc(l.provider_account_name || l.provider_account_id)}</td>
       <td>${esc(l.bank_account_name || '')}</td>
       <td>${esc(l.institution_name || '')}</td>
-      <td>${l.last_sync_at ? esc(new Date(l.last_sync_at).toLocaleString()) : 'Not synced'}</td>
+      <td>${esc(String(consentStatus || 'unknown'))}</td>
+      <td>${lastSync ? esc(new Date(lastSync).toLocaleString()) : 'Not synced'}</td>
       <td><button class="btn small danger btn-feed-unlink" data-id="${l.id}">Remove</button></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   main.innerHTML = `
     <div class="page-head"><h1>Settings</h1></div>
@@ -95,15 +113,24 @@ VIEWS.settingsView = async function (main) {
             ${feedStatusBadge}
           </div>
           <div class="btn-row" style="margin-bottom:10px">
-            <button class="btn primary" id="btn-bank-feed-connect" ${feed.configured ? '' : 'disabled title="Set LEDGERLY_BASIQ_API_KEY on the backend"'}>Connect bank account</button>
-            <button class="btn" id="btn-bank-feed-manage" ${(feed.connections || []).length ? '' : 'disabled'}>Manage consent</button>
+            <button class="btn primary" id="btn-bank-feed-connect" ${feed.configured ? '' : 'disabled title="Connect Ledgerly Cloud first"'}>Connect bank account</button>
+            <button class="btn" id="btn-bank-feed-manage" ${hasConnection ? '' : 'disabled'}>Manage consent</button>
+            <button class="btn" id="btn-bank-feed-reconnect" ${hasConnection ? '' : 'disabled'}>Reconnect</button>
+            <button class="btn danger" id="btn-bank-feed-revoke" ${hasConnection ? '' : 'disabled'} data-provider-connection-id="${esc(connectionIdForCloud)}">Revoke</button>
+            <button class="btn danger" id="btn-bank-feed-delete-data" ${hasConnection ? '' : 'disabled'}>Delete feed data</button>
           </div>
+          ${hasConnection ? `
+            <div class="mini-grid" style="margin-bottom:10px">
+              <div class="mini-card"><div>Consent</div><b>${esc(String(consentStatus || 'unknown'))}</b></div>
+              <div class="mini-card"><div>Expires</div><b>${consentExpiry ? esc(new Date(consentExpiry).toLocaleDateString()) : 'Not supplied'}</b></div>
+              <div class="mini-card"><div>Institution</div><b>${esc(primaryConnection.institutionName || primaryConnection.institution_name || 'Bank feed')}</b></div>
+            </div>` : ''}
           ${(feed.accountLinks || []).length ? `
             <table class="data">
-              <thead><tr><th>Provider account</th><th>Ledgerly account</th><th>Institution</th><th>Last sync</th><th></th></tr></thead>
+              <thead><tr><th>Provider account</th><th>Ledgerly account</th><th>Institution</th><th>Consent</th><th>Last sync</th><th></th></tr></thead>
               <tbody>${feedLinksHtml}</tbody>
             </table>` : '<div class="empty">No linked bank feeds</div>'}
-          ${feed.configured ? '' : '<div class="meta" style="margin-top:8px;color:var(--ink-soft);font-size:12.5px">Broker not configured</div>'}
+          ${feed.configured ? '' : `<div class="meta" style="margin-top:8px;color:var(--ink-soft);font-size:12.5px">${esc(feedSetupText)}</div>`}
         </div>
 
         <div class="card" id="ai-card">
@@ -314,6 +341,31 @@ VIEWS.settingsView = async function (main) {
     try {
       await window.ledgerly.bankFeed('manageConsent', {});
       toast('Consent management opened', 'success');
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('btn-bank-feed-reconnect')?.addEventListener('click', async () => {
+    try {
+      await window.ledgerly.bankFeed('manageConsent', { action: 'reconnect' });
+      toast('Reconnect consent opened', 'success');
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('btn-bank-feed-revoke')?.addEventListener('click', async (ev) => {
+    if (!confirm('Revoke this bank feed consent? Local accounting history stays in Ledgerly.')) return;
+    try {
+      await window.ledgerly.bankFeed('revokeConsent', { providerConnectionId: ev.currentTarget.dataset.providerConnectionId || '' });
+      toast('Bank feed consent revoked', 'success');
+      VIEWS.settingsView(main);
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('btn-bank-feed-delete-data')?.addEventListener('click', async () => {
+    if (!confirm('Request deletion of redundant bank feed data and remove local feed mappings? Reconciled accounting history stays in Ledgerly.')) return;
+    try {
+      await window.ledgerly.bankFeed('requestDataDeletion', { reason: 'user_requested' });
+      for (const link of feed.accountLinks || []) {
+        await window.ledgerly.bankFeed('disconnectLocalMapping', { linkId: Number(link.id) });
+      }
+      toast('Bank feed data deletion requested', 'success');
+      VIEWS.settingsView(main);
     } catch (e) { showError(e); }
   });
   on(main, '.btn-feed-unlink', 'click', async (ev) => {

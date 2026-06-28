@@ -276,7 +276,7 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
 
   function listBankFeedConnections({ organizationId, provider = 'basiq' }) {
     return Array.from(bankConnections.values())
-      .filter(row => row.organizationId === organizationId && row.provider === provider && !row.revokedAt)
+      .filter(row => row.organizationId === organizationId && row.provider === provider)
       .map(publicBankConnection);
   }
 

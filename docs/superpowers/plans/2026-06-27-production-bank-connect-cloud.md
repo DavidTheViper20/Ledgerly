@@ -367,8 +367,8 @@ Desktop additions:
 
 ### Phase 7: Consent And CDR Dashboard
 
-- [ ] Replace Settings bank-feed card with production dashboard state from Cloud.
-- [ ] Show:
+- [x] Replace Settings bank-feed card with production dashboard state from Cloud.
+- [x] Show:
   - Institution.
   - Linked account.
   - Consent status.
@@ -376,15 +376,15 @@ Desktop additions:
   - Last sync.
   - Reconnect/manage/revoke actions.
   - Redundant-data deletion request.
-- [ ] Add user-facing deletion flow:
+- [x] Add user-facing deletion flow:
   - remove local mappings
   - request cloud deletion/de-identification where applicable
   - leave reconciled accounting history intact unless user explicitly deletes their Ledgerly organization
-- [ ] Tests:
+- [x] Tests:
   - Revoked consent blocks sync.
   - Expired consent shows reconnect state.
   - Deletion request creates audit event.
-- [ ] Commit: `feat: add consent management dashboard`.
+- [x] Commit: `feat: add consent management dashboard`.
 
 ### Phase 8: Commercial Security Hardening
 
