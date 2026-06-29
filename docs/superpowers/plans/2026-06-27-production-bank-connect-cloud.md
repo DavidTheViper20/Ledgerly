@@ -388,22 +388,22 @@ Desktop additions:
 
 ### Phase 8: Commercial Security Hardening
 
-- [ ] Add Electron CSP.
-- [ ] Revisit `sandbox: false` and document or fix.
-- [ ] Add IPC input validation for every auth/cloud/bank-feed method.
-- [ ] Add local app lock option.
-- [ ] Add secure token deletion on sign-out.
-- [ ] Add structured audit logs for login, device registration, consent start, consent manage, sync, revoke, deletion request, org deletion.
-- [ ] Add rate limiting on cloud endpoints.
-- [ ] Add production secrets separation.
-- [ ] Add backup/restore strategy for cloud DB.
-- [ ] Add Sentry or equivalent error monitoring with sensitive-field scrubbing.
-- [ ] Tests:
+- [x] Add Electron CSP.
+- [x] Revisit `sandbox: false` and document or fix.
+- [x] Add IPC input validation for every auth/cloud/bank-feed method.
+- [x] Add local app lock option.
+- [x] Add secure token deletion on sign-out.
+- [x] Add structured audit logs for login, device registration, consent start, consent manage, sync, revoke, deletion request, org deletion.
+- [x] Add rate limiting on cloud endpoints.
+- [x] Add production secrets separation.
+- [x] Add backup/restore strategy for cloud DB.
+- [x] Add Sentry or equivalent error monitoring with sensitive-field scrubbing.
+- [x] Tests:
   - No provider secrets in renderer bundle.
   - No provider secrets in local SQLite.
   - IPC rejects unknown methods and invalid shapes.
   - Sign-out clears local session.
-- [ ] Commit: `feat: harden production auth and bank feed security`.
+- [x] Commit: `feat: harden production auth and bank feed security`.
 
 ### Phase 9: Staging And Real-World Testing
 

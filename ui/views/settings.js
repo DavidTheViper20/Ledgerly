@@ -7,6 +7,10 @@ VIEWS.settingsView = async function (main) {
   try { orgs = await window.ledgerly.orgs('list'); } catch { /* env-pinned db */ }
   let feed = { configured: false, connections: [], accountLinks: [] };
   try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
+  let cloudSession = { signedIn: false, organizationId: '' };
+  try { cloudSession = await window.ledgerly.cloudSession('status'); } catch { /* older shell */ }
+  let appLock = { enabled: false, configured: false, locked: false };
+  try { appLock = await window.ledgerly.security('status'); } catch { /* older shell */ }
   const cloud = feed.cloud || {};
   const localConnections = feed.connections || [];
   const cloudConnections = cloud.connections || [];
@@ -118,6 +122,7 @@ VIEWS.settingsView = async function (main) {
             <button class="btn" id="btn-bank-feed-reconnect" ${hasConnection ? '' : 'disabled'}>Reconnect</button>
             <button class="btn danger" id="btn-bank-feed-revoke" ${hasConnection ? '' : 'disabled'} data-provider-connection-id="${esc(connectionIdForCloud)}">Revoke</button>
             <button class="btn danger" id="btn-bank-feed-delete-data" ${hasConnection ? '' : 'disabled'}>Delete feed data</button>
+            <button class="btn" id="btn-cloud-signout" ${cloudSession.signedIn ? '' : 'disabled'}>Sign out</button>
           </div>
           ${hasConnection ? `
             <div class="mini-grid" style="margin-bottom:10px">
@@ -131,6 +136,15 @@ VIEWS.settingsView = async function (main) {
               <tbody>${feedLinksHtml}</tbody>
             </table>` : '<div class="empty">No linked bank feeds</div>'}
           ${feed.configured ? '' : `<div class="meta" style="margin-top:8px;color:var(--ink-soft);font-size:12.5px">${esc(feedSetupText)}</div>`}
+        </div>
+
+        <div class="card">
+          <h2>Local app lock</h2>
+          <form id="app-lock-form">
+            <label class="checkbox"><input type="checkbox" name="enabled" ${appLock.enabled ? 'checked' : ''} /> Require local passcode on this device</label>
+            <label class="field">Passcode<input name="passcode" type="password" inputmode="numeric" autocomplete="new-password" placeholder="${appLock.configured ? 'Enter a new passcode to change it' : 'At least 6 digits'}" /></label>
+            <button class="btn primary" type="submit">Save app lock</button>
+          </form>
         </div>
 
         <div class="card" id="ai-card">
@@ -365,6 +379,26 @@ VIEWS.settingsView = async function (main) {
         await window.ledgerly.bankFeed('disconnectLocalMapping', { linkId: Number(link.id) });
       }
       toast('Bank feed data deletion requested', 'success');
+      VIEWS.settingsView(main);
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('btn-cloud-signout')?.addEventListener('click', async () => {
+    if (!confirm('Sign out of Ledgerly Cloud on this device? Local accounting data stays in Ledgerly.')) return;
+    try {
+      await window.ledgerly.cloudSession('signOut', {});
+      toast('Signed out of Ledgerly Cloud', 'success');
+      VIEWS.settingsView(main);
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('app-lock-form')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      const form = new FormData(ev.target);
+      await window.ledgerly.security('configureLock', {
+        enabled: form.get('enabled') === 'on',
+        passcode: form.get('passcode') || '',
+      });
+      toast('App lock settings saved', 'success');
       VIEWS.settingsView(main);
     } catch (e) { showError(e); }
   });

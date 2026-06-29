@@ -7,6 +7,7 @@ const { createRemoteJwksVerifier, verifyBearerAuth } = require('./auth/verify-to
 const { can } = require('./auth/roles');
 const { createMemoryStore } = require('./db/memory-store');
 const { createBasiqClient } = require('./providers/basiq-client');
+const { scrubSensitive } = require('./security/scrub');
 
 function sendJson(res, status, body, headers = {}) {
   const payload = JSON.stringify(body);
@@ -32,6 +33,23 @@ function readJson(req) {
     });
     req.on('error', reject);
   });
+}
+
+function createRateLimiter({ windowMs = 60_000, max = 120 } = {}) {
+  const buckets = new Map();
+  return function checkRateLimit(req) {
+    if (!max || max < 1) return null;
+    const now = Date.now();
+    const key = req.headers.authorization || req.socket.remoteAddress || 'anonymous';
+    let bucket = buckets.get(key);
+    if (!bucket || now >= bucket.resetAt) {
+      bucket = { count: 0, resetAt: now + windowMs };
+      buckets.set(key, bucket);
+    }
+    bucket.count += 1;
+    if (bucket.count <= max) return null;
+    return { retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)) };
+  };
 }
 
 async function authenticate(req, { store, verifyToken }) {
@@ -109,7 +127,9 @@ function createServer({
     audience: config.oidcAudience,
     jwksUrl: config.oidcJwksUrl,
   }),
+  rateLimit = { windowMs: 60_000, max: 120 },
 } = {}) {
+  const checkRateLimit = createRateLimiter(rateLimit);
   return http.createServer((req, res) => {
     const run = async () => {
       const url = new URL(req.url, 'http://ledgerly.local');
@@ -124,6 +144,13 @@ function createServer({
         }
 
         if (url.pathname.startsWith('/v1/')) {
+          const limited = checkRateLimit(req);
+          if (limited) {
+            sendJson(res, 429, errorBody('rate_limited', 'Too many requests'), {
+              'Retry-After': String(limited.retryAfter),
+            });
+            return;
+          }
           if (!req.headers.authorization) {
             sendJson(res, 401, errorBody('unauthorized', 'Missing bearer token'));
             return;
@@ -131,6 +158,15 @@ function createServer({
           const { user } = await authenticate(req, { store, verifyToken });
 
           if (req.method === 'GET' && url.pathname === '/v1/me') {
+            const firstOrg = store.listOrganizationsForUser(user.id)[0];
+            if (firstOrg) {
+              store.addAuditEvent({
+                organizationId: firstOrg.id,
+                userId: user.id,
+                eventType: 'auth.session_checked',
+                metadata: {},
+              });
+            }
             sendJson(res, 200, {
               user,
               organizations: store.listOrganizationsForUser(user.id),
@@ -406,13 +442,21 @@ function createServer({
             const organizationId = decodeURIComponent(registerMatch[1]);
             requireMembership(store, user.id, organizationId, 'devices.manage');
             const body = await readJson(req);
+            const device = store.registerDevice({
+              userId: user.id,
+              organizationId,
+              deviceName: body.deviceName,
+              publicKey: body.publicKey,
+            });
+            store.addAuditEvent({
+              organizationId,
+              userId: user.id,
+              deviceId: device.id,
+              eventType: 'device.registered',
+              metadata: { deviceName: device.deviceName },
+            });
             sendJson(res, 201, {
-              device: store.registerDevice({
-                userId: user.id,
-                organizationId,
-                deviceName: body.deviceName,
-                publicKey: body.publicKey,
-              }),
+              device,
             });
             return;
           }
@@ -435,7 +479,7 @@ function createServer({
           sendJson(res, 401, errorBody('unauthorized', 'Missing bearer token'));
           return;
         }
-        if (/token|Auth verifier/i.test(err.message)) {
+        if (/Invalid bearer token|Unsupported token algorithm|Unknown token signing key|Invalid token signature|Invalid token issuer|Invalid token audience|Token expired|Token not active|OIDC|Auth verifier/i.test(err.message)) {
           sendJson(res, 401, errorBody('unauthorized', err.message));
           return;
         }
@@ -451,7 +495,7 @@ function createServer({
           sendJson(res, 400, errorBody('bad_request', err.message));
           return;
         }
-        logger.error?.('request_failed', { message: err.message });
+        logger.error?.('request_failed', scrubSensitive({ message: err.message, code: err.code }));
         sendJson(res, 500, errorBody('internal_error', 'Internal server error'));
       }
     };

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session: electronSession } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -8,6 +8,15 @@ const dbm = require('../src/db');
 const api = require('../src/api');
 const cloudBankFeedFlow = require('../src/services/cloud/bank-feed-flow');
 const { createCloudClient } = require('../src/services/cloud/client');
+const cloudSession = require('../src/services/cloud/session');
+const localLock = require('../src/services/security/local-lock');
+const {
+  registerContentSecurityPolicy,
+  secureBrowserWindowOptions,
+  validateBankFeedRequest,
+  validateCloudSessionRequest,
+  validateExternalUrl,
+} = require('./security');
 
 let db;
 let win;
@@ -65,29 +74,19 @@ function openActiveOrg() {
 }
 
 function createWindow() {
-  win = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 1000,
-    minHeight: 640,
-    backgroundColor: '#f4f5f8',
-    title: 'Ledgerly',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  });
+  win = new BrowserWindow(secureBrowserWindowOptions({
+    preload: path.join(__dirname, 'preload.js'),
+  }));
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://') || url.startsWith('mailto:')) shell.openExternal(url);
+    try { shell.openExternal(validateExternalUrl(url)); } catch {}
     return { action: 'deny' };
   });
 }
 
 app.whenReady().then(() => {
+  registerContentSecurityPolicy(electronSession.defaultSession);
   initRegistry();
   openActiveOrg();
 
@@ -194,7 +193,10 @@ app.whenReady().then(() => {
 
   const bankFeedCloudClient = createCloudClient({
     baseUrl: process.env.LEDGERLY_CLOUD_URL || '',
-    sessionToken: process.env.LEDGERLY_CLOUD_TOKEN || process.env.LEDGERLY_SESSION_TOKEN || '',
+    getSessionToken: () => cloudSession.getSession(db).sessionToken ||
+      process.env.LEDGERLY_CLOUD_TOKEN ||
+      process.env.LEDGERLY_SESSION_TOKEN ||
+      '',
     organizationId: process.env.LEDGERLY_CLOUD_ORG_ID || '',
   });
   function cloudOrgId(args = {}) {
@@ -281,6 +283,36 @@ app.whenReady().then(() => {
     try {
       const fn = BANK_FEED_METHODS[method];
       if (!fn) throw new Error('Unknown bank feed method: ' + method);
+      return { ok: true, data: await fn(validateBankFeedRequest(method, args || {})) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  const CLOUD_SESSION_METHODS = {
+    status: () => cloudSession.publicStatus(db),
+    save: (a) => cloudSession.saveSession(db, a),
+    signOut: () => cloudSession.signOut(db),
+  };
+  ipcMain.handle('cloud-session', async (_e, method, args) => {
+    try {
+      const fn = CLOUD_SESSION_METHODS[method];
+      if (!fn) throw new Error('Unknown cloud session method: ' + method);
+      return { ok: true, data: await fn(validateCloudSessionRequest(method, args || {})) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  const SECURITY_METHODS = {
+    status: () => localLock.status(db),
+    configureLock: (a) => localLock.configure(db, a),
+    verifyLock: (a) => ({ ok: localLock.verify(db, a) }),
+  };
+  ipcMain.handle('security', async (_e, method, args) => {
+    try {
+      const fn = SECURITY_METHODS[method];
+      if (!fn) throw new Error('Unknown security method: ' + method);
       return { ok: true, data: await fn(args || {}) };
     } catch (err) {
       return { ok: false, error: err.message };
@@ -302,7 +334,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('open-external', (_e, url) => {
-    if (/^https?:\/\//i.test(String(url))) require('electron').shell.openExternal(String(url));
+    try { require('electron').shell.openExternal(validateExternalUrl(url)); } catch {}
   });
 
   ipcMain.handle('export-pdf', async (_e, suggestedName) => {

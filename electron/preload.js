@@ -25,6 +25,16 @@ contextBridge.exposeInMainWorld('ledgerly', {
     if (!res.ok) throw new Error(res.error);
     return res.data;
   },
+  async cloudSession(method, args) {
+    const res = await ipcRenderer.invoke('cloud-session', method, args);
+    if (!res.ok) throw new Error(res.error);
+    return res.data;
+  },
+  async security(method, args) {
+    const res = await ipcRenderer.invoke('security', method, args);
+    if (!res.ok) throw new Error(res.error);
+    return res.data;
+  },
   // Streaming chat: onEvent receives { type: 'status'|'thinking'|'reply'|'tool', ... }
   // while the model works; the returned promise resolves with the final
   // { reply, toolsUsed, sources }.
