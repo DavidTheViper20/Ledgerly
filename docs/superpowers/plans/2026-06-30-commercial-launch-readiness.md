@@ -6,6 +6,15 @@
 
 Turn the current Ledgerly desktop app plus Ledgerly Cloud bank-feed work into a legitimate, sellable product with account creation, secure bank linking, a customer website, installer/update flow, billing, support, monitoring, legal/compliance readiness, and a real staging-to-production release path.
 
+## Track A vs Track B (2026-07-02 decision)
+
+The launch work splits into two tracks so the owner can use the product before it is sellable to others:
+
+- **Track A (now) — single-user path.** Get the owner's own bank data syncing end to end with the simplest safe auth: static token mode (`CLOUD_AUTH_MODE=static` + `CLOUD_STATIC_TOKEN`). This needs only hosting + hosted Postgres + a Basiq sandbox key. No Auth0, no tenants, no billing.
+- **Track B (later, when selling to others) — multi-tenant productization.** Auth0 tenants, device registration/enforcement, billing, legal, and code signing. Device enforcement (Pass 4) is explicitly Track B.
+
+Track A retires the static token path once Auth0 is live; from then on everything runs on the Track B OIDC identity model.
+
 ## Current Audit Snapshot
 
 Date: 2026-06-30
@@ -151,10 +160,10 @@ This is the recommended order because each phase creates a foundation for the ne
 - [x] Create `server/src/db/postgres-store.js` implementing the same method surface as `memory-store`.
 - [x] Keep `server/src/db/memory-store.js` as the test double.
 - [x] Make `server/src/app.js` choose Postgres when `DATABASE_URL` exists and memory only in tests/dev.
-- [x] Replace `server/src/db/migrate.js` with a real PostgreSQL migration runner.
+- [x] Replace `server/src/db/migrate.js` with a real PostgreSQL migration runner. (Now applies numbered migration files under `server/src/db/migrations/` tracked in a `schema_migrations` table; re-running only applies pending migrations.)
 - [x] Add store contract tests that run against `memory-store` and a local Postgres test database when available.
 - [x] Add a deployment health check that confirms the app can reach the database without exposing secrets.
-- [ ] Commit as `feat: add Ledgerly Cloud Postgres persistence`.
+- [x] Commit as `feat: add Ledgerly Cloud Postgres persistence`.
 
 ### Pass 2: Hosted Staging Cloud
 

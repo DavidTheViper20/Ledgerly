@@ -1,6 +1,6 @@
 # Desktop Cloud Sign-In Setup
 
-Last checked: 2026-06-30
+Last checked: 2026-07-02
 
 Ledgerly Desktop uses a native-app OAuth flow:
 
@@ -27,9 +27,16 @@ Create these in the Auth0 staging tenant:
 4. Grant types: Authorization Code and Refresh Token.
 5. PKCE: enabled.
 6. Refresh Token Rotation: enabled with reuse detection.
-7. Allowed Callback URL: `http://127.0.0.1:38987/auth/callback` unless `LEDGERLY_AUTH_REDIRECT_URI` is changed.
+7. Allowed Callback URL: register exactly `http://127.0.0.1/auth/callback`.
 8. Email verification: enabled before beta.
 9. MFA policy: required before production for account/admin actions.
+
+## Callback And Port
+
+The default redirect URI is `http://127.0.0.1/auth/callback` with **no port**. At sign-in time the loopback listener binds an **ephemeral port** and hands the effective redirect URI (with that port) to both the authorize request and the token exchange. This follows RFC 8252 (OAuth 2.0 for Native Apps): loopback redirects should use a dynamically chosen port.
+
+- Register exactly `http://127.0.0.1/auth/callback` in Auth0. Auth0 ignores the port on loopback (`127.0.0.1`) redirect URIs, so the portless URL matches every ephemeral port.
+- `LEDGERLY_AUTH_REDIRECT_URI` with an **explicit port** is still supported (e.g. if the identity provider cannot ignore loopback ports). In that case the fixed port is used, and sign-in errors clearly if that port is already in use.
 
 ## Desktop Environment Values
 
@@ -40,10 +47,15 @@ export LEDGERLY_CLOUD_URL="https://ledgerly-cloud-staging.onrender.com"
 export LEDGERLY_AUTH_ISSUER="https://YOUR_AUTH0_TENANT/"
 export LEDGERLY_AUTH_CLIENT_ID="YOUR_NATIVE_APP_CLIENT_ID"
 export LEDGERLY_AUTH_AUDIENCE="YOUR_LEDGERLY_API_AUDIENCE"
-export LEDGERLY_AUTH_REDIRECT_URI="http://127.0.0.1:38987/auth/callback"
+# Optional. Leave unset to use the default portless loopback with an ephemeral
+# port. Set an explicit port only if the identity provider cannot ignore
+# loopback ports:
+# export LEDGERLY_AUTH_REDIRECT_URI="http://127.0.0.1:38987/auth/callback"
 ```
 
 Do not set a client secret in the desktop app. Native desktop apps are public clients and must rely on PKCE, not an embedded secret.
+
+The legacy `cloud-session` token path (setting a session token directly, e.g. via `LEDGERLY_CLOUD_TOKEN`) is now **dev-only**: it is honoured only in unpackaged builds when `NODE_ENV`/`APP_ENV` is not `production`, and is blocked in packaged/production builds. Use it only for Track A single-user staging (see the staging deployment runbook); real sign-in uses the PKCE flow above.
 
 ## Verification
 

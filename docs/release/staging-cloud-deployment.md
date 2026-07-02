@@ -1,8 +1,14 @@
 # Ledgerly Cloud Staging Deployment
 
-Last checked: 2026-06-30
+Last checked: 2026-07-02
+
+**Current status: NOT deployed. Everything below is scaffolding/runbook.** No Ledgerly Cloud service is live on Render or anywhere else. The `render.yaml` Blueprint, env-var prompts, and verification steps describe the intended first deploy; they have not been executed against a real environment yet.
 
 This runbook deploys only the Ledgerly Cloud API. The desktop app stays local until the secure sign-in and cloud API client passes are complete.
+
+## Region Note
+
+Render has **no Australian region**. The Blueprint uses `singapore`, which is acceptable for staging only. For production, move to an AU region: Fly.io (`syd`), Railway, or AWS `ap-southeast-2`. Do not churn hosting now — pick the AU host as part of the production cutover, not during staging.
 
 ## Target Shape
 
@@ -36,6 +42,15 @@ Do not commit real values. The Blueprint uses `sync: false` so Render prompts fo
 | `SENTRY_DSN` | Sentry project | Optional until monitoring pass is wired, but reserve the variable now |
 
 `DATABASE_URL` is generated from the Render Postgres database using `fromDatabase.connectionString`.
+
+## Track A: Static Token Auth (single-user staging without Auth0)
+
+Track A gets the owner's own bank data flowing end to end before Auth0 exists. Instead of OIDC/JWKS verification, the cloud server accepts a single shared bearer token as one fixed identity.
+
+- On the cloud service, set `CLOUD_AUTH_MODE=static` and `CLOUD_STATIC_TOKEN` to a random string of **32 or more characters**. Treat `CLOUD_STATIC_TOKEN` as a cloud secret (it is `sync: false` in the Blueprint). Setting `CLOUD_STATIC_TOKEN` alone also switches the server into static mode.
+- The desktop app uses the **same token** via `LEDGERLY_CLOUD_TOKEN`, but only in **unpackaged dev builds**. The legacy plaintext token path is blocked in packaged/production builds (it is honoured only when the app is unpackaged and `NODE_ENV`/`APP_ENV` is not `production`).
+- Leave the `OIDC_*` variables unset while in static mode; OIDC verification is bypassed.
+- Once Auth0 is live (Track B), this mode is **retired**: set `CLOUD_AUTH_MODE` back to OIDC (or unset it), remove `CLOUD_STATIC_TOKEN`, and populate the `OIDC_*` variables.
 
 ## First Deploy
 
@@ -80,6 +95,7 @@ After Auth0 staging is created, repeat `/v1/me` with a real staging access token
 
 ## Migration Rules
 
+- `npm --prefix server run migrate` applies the numbered migration files under `server/src/db/migrations/` (e.g. `001_init.sql`) in order. Applied migrations are recorded in a `schema_migrations` table, so re-running the command is a no-op — only pending migrations are applied.
 - Schema changes must be forward-compatible for at least one deployed version.
 - Additive migrations are preferred until we have production traffic and formal release windows.
 - Run migrations through Render's `preDeployCommand`.

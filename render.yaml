@@ -19,6 +19,10 @@ services:
         fromDatabase:
           name: ledgerly-cloud-staging-db
           property: connectionString
+      - key: CLOUD_AUTH_MODE
+        sync: false
+      - key: CLOUD_STATIC_TOKEN
+        sync: false
       - key: OIDC_ISSUER
         sync: false
       - key: OIDC_AUDIENCE
