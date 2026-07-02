@@ -390,6 +390,8 @@ const METHODS = {
   'tax.statement': (db, a) => tax.getStatement(db, a),
   'tax.markLodged': (db, a) => tax.markLodged(db, a),
   'tax.unlodge': (db, a) => tax.unlodge(db, a),
+  'tax.tpar': (db, a) => tax.tpar(db, a || {}),
+  'tax.recentFyEnds': (db, a) => tax.recentFyEnds(db, a || {}),
 };
 
 function call(db, method, args) {

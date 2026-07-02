@@ -117,3 +117,99 @@ test('tax: getStatement reflects lodgement status', () => {
   assert.equal(stmt.status, 'LODGED');
   assert.ok(stmt.lodgement);
 });
+
+// ---------- current (in-progress) period ----------
+
+test('tax: a fresh org with zero journals still has a current period', () => {
+  const r = call('tax.statements', { today: '2026-07-02' });
+  assert.equal(r.needsAttention.length, 0);
+  assert.equal(r.completed.length, 0);
+  assert.ok(r.current);
+  assert.deepEqual(
+    [r.current.periodStart, r.current.periodEnd, r.current.dueDate],
+    ['2026-07-01', '2026-09-30', '2026-10-28'],
+  );
+  assert.equal(r.current.netPayableCents, 0);
+});
+
+test('tax: current period reflects figures posted so far, separate from needsAttention', () => {
+  const env = setupBasics();
+  postSale(env, { cents: 100000, issueDate: '2025-08-10' }); // ended Q1 FY26
+  postSale(env, { cents: 50000, issueDate: '2026-07-02' }); // in the current (in-progress) quarter
+  const r = call('tax.statements', { today: '2026-07-02' });
+  assert.equal(r.current.periodStart, '2026-07-01');
+  assert.equal(r.current.periodEnd, '2026-09-30');
+  assert.equal(r.current.netPayableCents, 5000); // $500 x 10% GST
+  // The in-progress period must never appear in needsAttention.
+  assert.equal(r.needsAttention.some(s => s.periodStart === '2026-07-01'), false);
+});
+
+// ---------- Taxable Payments Annual Report (TPAR) ----------
+
+function setupTparEnv() {
+  const bank = call('bank.createAccount', { name: 'Operating Account', code: '091' });
+  const supplier = call('contacts.save', { name: 'Bob Builder', is_supplier: 1, tax_number: '11 222 333 444' });
+  const customer = call('contacts.save', { name: 'Alice Client', is_customer: 1 });
+  const expAcc = db.prepare("SELECT * FROM accounts WHERE type='EXPENSE' LIMIT 1").get();
+  const salesAcc = db.prepare("SELECT * FROM accounts WHERE code='200'").get();
+  const taxRate = db.prepare("SELECT * FROM tax_rates WHERE name LIKE 'GST on Expenses%'").get();
+  return { bank, supplier, customer, expAcc, salesAcc, taxRate };
+}
+
+test('tax: TPAR shows a bill with a partial payment, GST apportioned pro-rata', () => {
+  const env = setupTparEnv();
+  const bill = call('invoices.save', {
+    kind: 'ACCPAY', contactId: env.supplier.id, issueDate: '2025-08-01', dueDate: '2025-08-15', taxMode: 'exclusive',
+    lines: [{ description: 'Contract work', qty: 1, unitPriceCents: 100000, accountId: env.expAcc.id, taxRateId: env.taxRate.id }],
+  });
+  call('invoices.approve', { id: bill.id });
+  // Bill total is $1100 ($1000 + $100 GST); pay half.
+  call('payments.add', { invoiceId: bill.id, bankAccountId: env.bank.id, date: '2025-08-20', amountCents: 55000 });
+
+  const r = call('tax.tpar', { fyEnd: '2026-06-30' });
+  assert.equal(r.contacts.length, 1);
+  const row = r.contacts[0];
+  assert.equal(row.name, 'Bob Builder');
+  assert.equal(row.abn, '11 222 333 444');
+  assert.equal(row.totalPaidCents, 55000);
+  assert.equal(row.gstCents, 5000); // 100 GST x (55000/110000)
+  assert.equal(r.totals.totalPaidCents, 55000);
+  assert.equal(r.totals.gstCents, 5000);
+});
+
+test('tax: TPAR excludes customer (ACCREC) invoices', () => {
+  const env = setupTparEnv();
+  const inv = call('invoices.save', {
+    kind: 'ACCREC', contactId: env.customer.id, issueDate: '2025-08-01', dueDate: '2025-08-15', taxMode: 'exclusive',
+    lines: [{ description: 'Consulting', qty: 1, unitPriceCents: 50000, accountId: env.salesAcc.id, taxRateId: env.taxRate.id }],
+  });
+  call('invoices.approve', { id: inv.id });
+  call('payments.add', { invoiceId: inv.id, bankAccountId: env.bank.id, date: '2025-08-20', amountCents: 55000 });
+
+  const r = call('tax.tpar', { fyEnd: '2026-06-30' });
+  assert.equal(r.contacts.length, 0);
+  assert.equal(r.totals.totalPaidCents, 0);
+});
+
+test('tax: TPAR excludes payments outside the selected financial year', () => {
+  const env = setupTparEnv();
+  const bill = call('invoices.save', {
+    kind: 'ACCPAY', contactId: env.supplier.id, issueDate: '2024-08-01', dueDate: '2024-08-15', taxMode: 'exclusive',
+    lines: [{ description: 'Old work', qty: 1, unitPriceCents: 20000, accountId: env.expAcc.id, taxRateId: env.taxRate.id }],
+  });
+  call('invoices.approve', { id: bill.id });
+  // Paid in FY25 (ends 2025-06-30), not FY26.
+  call('payments.add', { invoiceId: bill.id, bankAccountId: env.bank.id, date: '2024-08-20', amountCents: 22000 });
+
+  const r = call('tax.tpar', { fyEnd: '2026-06-30' });
+  assert.equal(r.contacts.length, 0);
+
+  const rPrior = call('tax.tpar', { fyEnd: '2025-06-30' });
+  assert.equal(rPrior.contacts.length, 1);
+  assert.equal(rPrior.contacts[0].totalPaidCents, 22000);
+});
+
+test('tax: recentFyEnds returns the last 3 ended financial years, most recent first', () => {
+  const r = call('tax.recentFyEnds', { today: '2026-07-02' });
+  assert.deepEqual(r, ['2026-06-30', '2025-06-30', '2024-06-30']);
+});

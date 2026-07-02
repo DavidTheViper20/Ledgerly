@@ -86,10 +86,22 @@ function listStatements(db, { today: todayArg } = {}) {
 
   const needsAttention = [];
   const completed = [];
+  let current = null;
 
   for (const { periodStart, periodEnd } of periods) {
-    // Only completed periods (period_end < today) are activity statements.
-    if (periodEnd >= today) continue;
+    // The period containing today is always "in progress", never an activity
+    // statement yet — it has no due date obligation until it ends.
+    if (periodEnd >= today) {
+      if (!current || periodStart > current.periodStart) {
+        const dueDate = dueDateFor(periodEnd, cycle);
+        const bas = basSummary(db, { from: periodStart, to: today });
+        current = {
+          periodStart, periodEnd, dueDate,
+          netPayableCents: netPayableFromBas(bas),
+        };
+      }
+      continue;
+    }
     const dueDate = dueDateFor(periodEnd, cycle);
     const lodged = lodgementFor(db, periodStart, periodEnd);
     if (lodged) {
@@ -112,11 +124,34 @@ function listStatements(db, { today: todayArg } = {}) {
     }
   }
 
+  // There is always a current period, even with zero journals: buildPeriods
+  // stops at the period containing `today`, so the loop above should have
+  // set it. As a defensive fallback (e.g. seriesStart computed oddly),
+  // derive it directly from the FY start.
+  if (!current) {
+    const fyStartD = fyStart(db, today);
+    const stepMonths = cycle === 'monthly' ? 1 : 3;
+    const start = new Date(fyStartD + 'T00:00:00Z');
+    const todayD = new Date(today + 'T00:00:00Z');
+    let cursor = new Date(start);
+    while (true) {
+      const next = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + stepMonths, cursor.getUTCDate()));
+      if (next > todayD) break;
+      cursor = next;
+    }
+    const next = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + stepMonths, cursor.getUTCDate()));
+    const periodStart = ymd(cursor);
+    const periodEnd = ymd(new Date(next.getTime() - 864e5));
+    const dueDate = dueDateFor(periodEnd, cycle);
+    const bas = basSummary(db, { from: periodStart, to: today });
+    current = { periodStart, periodEnd, dueDate, netPayableCents: netPayableFromBas(bas) };
+  }
+
   // Needs attention: soonest due first. Completed: most recently lodged first.
   needsAttention.sort((a, b) => a.periodEnd < b.periodEnd ? -1 : 1);
   completed.sort((a, b) => a.periodEnd < b.periodEnd ? 1 : -1);
 
-  return { needsAttention, completed };
+  return { needsAttention, completed, current };
 }
 
 function getStatement(db, { from, to }) {
@@ -152,4 +187,79 @@ function unlodge(db, { id }) {
   return { ok: true };
 }
 
-module.exports = { listStatements, getStatement, markLodged, unlodge, dueDateFor, buildPeriods };
+// ---------- Taxable Payments Annual Report (TPAR) ----------
+// Payments made during a financial year against supplier bills (ACCPAY),
+// grouped by contact. GST is apportioned from the invoice pro-rata to the
+// payment amount — an approximation, noted in the UI.
+
+// The most recently ENDED financial year, as its FY end date (e.g. '2026-06-30').
+function mostRecentlyEndedFyEnd(db, today) {
+  const currentFyStart = fyStart(db, today);
+  // The day before this FY's start is the end of the most recently ended FY.
+  const d = new Date(currentFyStart + 'T00:00:00Z');
+  return ymd(new Date(d.getTime() - 864e5));
+}
+
+// The last `count` ENDED financial years, as their FY end dates, most recent first.
+function recentFyEnds(db, { today: todayArg, count = 3 } = {}) {
+  const today = todayArg || new Date().toISOString().slice(0, 10);
+  const out = [];
+  let end = mostRecentlyEndedFyEnd(db, today);
+  for (let i = 0; i < count; i++) {
+    out.push(end);
+    // The prior FY's end is one day before this FY's start.
+    const fyStartOfThis = fyStart(db, end);
+    end = ymd(new Date(new Date(fyStartOfThis + 'T00:00:00Z').getTime() - 864e5));
+  }
+  return out;
+}
+
+function tpar(db, { fyEnd: fyEndArg } = {}) {
+  const fyEnd = fyEndArg || mostRecentlyEndedFyEnd(db, new Date().toISOString().slice(0, 10));
+  const fyStartDate = fyStart(db, fyEnd);
+
+  const rows = db.prepare(`
+    SELECT p.id AS payment_id, p.amount_cents, p.date,
+           i.id AS invoice_id, i.total_cents AS invoice_total_cents, i.tax_cents AS invoice_tax_cents,
+           c.id AS contact_id, c.name AS contact_name, c.tax_number AS abn,
+           c.address AS address, c.city AS city, c.postcode AS postcode, c.country AS country
+    FROM payments p
+    JOIN invoices i ON i.id = p.invoice_id
+    JOIN contacts c ON c.id = i.contact_id
+    WHERE i.kind = 'ACCPAY' AND p.date >= ? AND p.date <= ?
+  `).all(fyStartDate, fyEnd);
+
+  const byContact = new Map();
+  for (const r of rows) {
+    if (!r.amount_cents) continue;
+    const gstCents = r.invoice_total_cents
+      ? Math.round((r.invoice_tax_cents || 0) * (r.amount_cents / r.invoice_total_cents))
+      : 0;
+    if (!byContact.has(r.contact_id)) {
+      const address = [r.address, r.city, r.postcode, r.country].filter(Boolean).join(', ');
+      byContact.set(r.contact_id, {
+        contactId: r.contact_id, name: r.contact_name, abn: r.abn || '', address,
+        totalPaidCents: 0, gstCents: 0,
+      });
+    }
+    const row = byContact.get(r.contact_id);
+    row.totalPaidCents += r.amount_cents;
+    row.gstCents += gstCents;
+  }
+
+  const contacts = [...byContact.values()].filter(c => c.totalPaidCents !== 0);
+  contacts.sort((a, b) => a.name.localeCompare(b.name));
+
+  const totals = contacts.reduce((acc, c) => {
+    acc.totalPaidCents += c.totalPaidCents;
+    acc.gstCents += c.gstCents;
+    return acc;
+  }, { totalPaidCents: 0, gstCents: 0 });
+
+  return { fyStart: fyStartDate, fyEnd, contacts, totals };
+}
+
+module.exports = {
+  listStatements, getStatement, markLodged, unlodge, dueDateFor, buildPeriods,
+  tpar, recentFyEnds, mostRecentlyEndedFyEnd,
+};

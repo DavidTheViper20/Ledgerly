@@ -493,6 +493,8 @@ async function runSmokeTour(outDir) {
     ['report-aged-ar', '#/reports/aged-receivables'],
     ['report-tax', '#/reports/tax'],
     ['tax', '#/tax'],
+    ['tax-tpar', '#/tax?tab=tpar'],
+    ['tax-settings', '#/tax?tab=settings'],
     ['settings', '#/settings'],
   ];
 
