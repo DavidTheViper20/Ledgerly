@@ -546,6 +546,39 @@ function createPostgresStore({ databaseUrl, pool = createPool({ databaseUrl }) }
     return result.rows.map(publicSyncRun);
   }
 
+  async function deleteBankFeedData({ organizationId }) {
+    return withTransaction(async (client) => {
+      const accounts = await client.query(
+        `DELETE FROM bank_feed_accounts a
+           USING bank_feed_connections c
+          WHERE a.connection_id = c.id AND c.organization_id = $1`,
+        [organizationId],
+      );
+      const connections = await client.query(
+        `DELETE FROM bank_feed_connections
+          WHERE organization_id = $1`,
+        [organizationId],
+      );
+      const providerUsers = await client.query(
+        `DELETE FROM bank_provider_users
+          WHERE organization_id = $1`,
+        [organizationId],
+      );
+      const syncRuns = await client.query(
+        `UPDATE bank_feed_sync_runs
+            SET result_json = NULL
+          WHERE organization_id = $1`,
+        [organizationId],
+      );
+      return {
+        connections: connections.rowCount,
+        accounts: accounts.rowCount,
+        providerUsers: providerUsers.rowCount,
+        syncRunsScrubbed: syncRuns.rowCount,
+      };
+    });
+  }
+
   async function addAuditEvent({ organizationId, userId, deviceId = null, eventType, metadata = {} }) {
     const result = await query(
       `INSERT INTO audit_events (organization_id, user_id, device_id, event_type, metadata_json)
@@ -600,6 +633,7 @@ function createPostgresStore({ databaseUrl, pool = createPool({ databaseUrl }) }
     startBankFeedSyncRun,
     finishBankFeedSyncRun,
     listBankFeedSyncRuns,
+    deleteBankFeedData,
     addAuditEvent,
     listAuditEventsForUser,
     close,

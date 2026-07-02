@@ -442,6 +442,39 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
       .map(publicSyncRun);
   }
 
+  function deleteBankFeedData({ organizationId }) {
+    const summary = { connections: 0, accounts: 0, providerUsers: 0, syncRunsScrubbed: 0 };
+    // Collect the org's connection ids so we can drop their account links.
+    const connectionIds = new Set();
+    for (const [key, row] of bankConnections) {
+      if (row.organizationId === organizationId) {
+        connectionIds.add(row.id);
+        bankConnections.delete(key);
+        summary.connections += 1;
+      }
+    }
+    for (const [key, row] of bankAccounts) {
+      if (connectionIds.has(row.connectionId)) {
+        bankAccounts.delete(key);
+        summary.accounts += 1;
+      }
+    }
+    for (const [key, row] of providerUsers) {
+      if (row.organizationId === organizationId) {
+        providerUsers.delete(key);
+        summary.providerUsers += 1;
+      }
+    }
+    // Scrub cached transaction payloads but keep the audit metadata rows.
+    for (const row of syncRuns.values()) {
+      if (row.organizationId === organizationId && row.result !== null) {
+        row.result = null;
+        summary.syncRunsScrubbed += 1;
+      }
+    }
+    return summary;
+  }
+
   function addAuditEvent({ organizationId, userId, deviceId = null, eventType, metadata = {} }) {
     const event = {
       id: makeId('aud', auditSeq++),
@@ -490,6 +523,7 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
     startBankFeedSyncRun,
     finishBankFeedSyncRun,
     listBankFeedSyncRuns,
+    deleteBankFeedData,
     addAuditEvent,
     listAuditEventsForUser,
   };

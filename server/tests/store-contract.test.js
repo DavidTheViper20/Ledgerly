@@ -114,6 +114,24 @@ async function exerciseStore(createStore) {
     assert.equal(events.at(-1).eventType, 'bank_feed.sync_succeeded');
     assert.deepEqual(events.at(-1).metadata, { provider: 'basiq' });
 
+    const deleted = await store.deleteBankFeedData({ organizationId: created.organization.id });
+    assert.deepEqual(deleted, {
+      connections: 1,
+      accounts: 1,
+      providerUsers: 1,
+      syncRunsScrubbed: 1,
+    });
+    assert.deepEqual(
+      await store.listBankFeedConnections({ organizationId: created.organization.id, provider: 'basiq' }),
+      [],
+    );
+    assert.deepEqual(await store.listBankFeedAccounts({ organizationId: created.organization.id }), []);
+    assert.equal(await store.getBankProviderUser({ organizationId: created.organization.id, provider: 'basiq' }), null);
+    const runsAfter = await store.listBankFeedSyncRuns({ organizationId: created.organization.id });
+    assert.equal(runsAfter.length, 1);
+    assert.equal(runsAfter[0].id, started.syncRun.id);
+    assert.equal(runsAfter[0].result, null);
+
     const revoked = await store.revokeDevice({
       userId: user.id,
       organizationId: created.organization.id,

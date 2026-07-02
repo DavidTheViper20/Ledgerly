@@ -58,6 +58,10 @@ function fakeBasiqClient() {
       calls.push(['revokeConnection', input]);
       return { ok: true };
     },
+    async deleteUser(input) {
+      calls.push(['deleteUser', input]);
+      return { ok: true };
+    },
   };
 }
 
@@ -164,7 +168,7 @@ test('bank feeds: manage, reconnect, and revoke consent are audited and return n
     });
     assert.equal(revoke.res.status, 200);
     assert.deepEqual(revoke.body, { ok: true });
-    assert.deepEqual(basiqClient.calls.at(-1), ['revokeConnection', { providerConnectionId: 'conn-1' }]);
+    assert.deepEqual(basiqClient.calls.at(-1), ['revokeConnection', { userId: 'basiq-user-1', providerConnectionId: 'conn-1' }]);
 
     const audit = await jsonFetch(baseUrl, '/v1/audit-events');
     assert.equal(audit.res.status, 200);
@@ -403,7 +407,10 @@ test('bank feeds: redundant data deletion request is audited', async () => {
       },
     });
     assert.equal(deletion.res.status, 202);
-    assert.deepEqual(deletion.body, { ok: true });
+    assert.deepEqual(deletion.body, {
+      ok: true,
+      deleted: { connections: 0, accounts: 0, providerUsers: 0, syncRunsScrubbed: 0 },
+    });
 
     const audit = await jsonFetch(baseUrl, '/v1/audit-events');
     assert.equal(audit.body.events.at(-1).eventType, 'bank_feed.data_deletion_requested');
@@ -411,8 +418,59 @@ test('bank feeds: redundant data deletion request is audited', async () => {
       provider: 'basiq',
       providerAccountId: 'acc-1',
       reason: 'user_requested',
+      connections: 0,
+      accounts: 0,
+      providerUsers: 0,
+      syncRunsScrubbed: 0,
+      providerDeletion: 'none',
     });
     assert.doesNotMatch(JSON.stringify(deletion.body), /basiq-secret-key|server-token/);
+  });
+});
+
+test('bank feeds: data deletion removes provider user, links, and cached transactions', async () => {
+  await withServer({}, async ({ baseUrl, organizationId, basiqClient }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+    await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: {
+        organizationId,
+        providerAccountId: 'acc-1',
+        providerAccountName: 'Business Everyday',
+        desktopBankAccountLocalId: '17',
+      },
+    });
+    const sync = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+    assert.equal(sync.res.status, 200);
+    assert.ok(sync.body.transactions.length > 0);
+
+    const deletion = await jsonFetch(baseUrl, '/v1/bank-feeds/data-deletion/request', {
+      method: 'POST',
+      body: { organizationId },
+    });
+    assert.equal(deletion.res.status, 202);
+    assert.equal(deletion.body.ok, true);
+    assert.equal(deletion.body.deleted.connections, 1);
+    assert.equal(deletion.body.deleted.accounts, 1);
+    assert.equal(deletion.body.deleted.providerUsers, 1);
+    assert.equal(deletion.body.deleted.syncRunsScrubbed, 1);
+
+    const status = await jsonFetch(baseUrl, `/v1/bank-feeds/status?organizationId=${encodeURIComponent(organizationId)}`);
+    assert.equal(status.res.status, 200);
+    assert.deepEqual(status.body.accountLinks, []);
+    assert.deepEqual(status.body.connections, []);
+    assert.ok(status.body.syncRuns.length > 0);
+    for (const run of status.body.syncRuns) {
+      assert.equal(run.result, null);
+    }
+
+    assert.deepEqual(basiqClient.calls.at(-1), ['deleteUser', { userId: 'basiq-user-1' }]);
   });
 });
 

@@ -187,9 +187,40 @@ function createBasiqClient({
     return authenticatedGet(`/jobs/${encodeURIComponent(jobId)}`, 'Basiq get job');
   }
 
-  async function revokeConnection({ providerConnectionId } = {}) {
+  // Basiq DELETE endpoints return 204 with an empty body, so we never parse
+  // JSON on success. 404 is treated as success too (the resource is already
+  // gone). Any other non-2xx is surfaced via the shared providerError shape.
+  async function authenticatedDelete(path, context) {
+    const token = await getServerToken();
+    const target = /^https?:\/\//.test(path) ? path : `${baseUrl}${path}`;
+    const res = await fetchImpl(target, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (res.ok || res.status === 404) return { ok: true };
+    let detail = '';
+    try {
+      const data = await res.json();
+      detail = data && (data.message || data.error || data.detail);
+    } catch { detail = ''; }
+    throw providerError(context, res.status, detail);
+  }
+
+  async function revokeConnection({ userId, providerConnectionId } = {}) {
+    if (!userId) throw new Error('Basiq userId is required');
     if (!providerConnectionId) throw new Error('Basiq providerConnectionId is required');
-    return { ok: true };
+    return authenticatedDelete(
+      `/users/${encodeURIComponent(userId)}/connections/${encodeURIComponent(providerConnectionId)}`,
+      'Basiq revoke connection',
+    );
+  }
+
+  async function deleteUser({ userId } = {}) {
+    if (!userId) throw new Error('Basiq userId is required');
+    return authenticatedDelete(`/users/${encodeURIComponent(userId)}`, 'Basiq delete user');
   }
 
   return {
@@ -201,6 +232,7 @@ function createBasiqClient({
     listTransactions,
     getJob,
     revokeConnection,
+    deleteUser,
   };
 }
 

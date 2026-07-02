@@ -411,6 +411,18 @@ function createServer({
             const body = await readJson(req);
             const organizationId = body.organizationId;
             await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const providerUser = await store.getBankProviderUser({ organizationId, provider: 'basiq' });
+            const summary = await store.deleteBankFeedData({ organizationId });
+            let providerDeletion = 'none';
+            if (providerUser) {
+              try {
+                await basiqClient.deleteUser({ userId: providerUser.providerUserId });
+                providerDeletion = 'deleted';
+              } catch (err) {
+                logger.error?.('basiq_delete_user_failed', scrubSensitive({ message: err.message, code: err.code }));
+                providerDeletion = 'failed';
+              }
+            }
             await store.addAuditEvent({
               organizationId,
               userId: user.id,
@@ -419,9 +431,11 @@ function createServer({
                 provider: 'basiq',
                 providerAccountId: body.providerAccountId || '',
                 reason: body.reason || 'user_requested',
+                ...summary,
+                providerDeletion,
               },
             });
-            sendJson(res, 202, { ok: true });
+            sendJson(res, 202, { ok: true, deleted: summary });
             return;
           }
 
@@ -461,8 +475,15 @@ function createServer({
             const body = await readJson(req);
             const organizationId = body.organizationId;
             await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
-            await basiqClient.revokeConnection({ providerConnectionId: body.providerConnectionId || '' });
-            await store.revokeBankFeedConnection({ organizationId, providerConnectionId: body.providerConnectionId || '' });
+            const providerConnectionId = body.providerConnectionId || '';
+            const connection = await store.firstBankFeedConnection({ organizationId, provider: 'basiq' });
+            if (providerConnectionId && connection) {
+              await basiqClient.revokeConnection({
+                userId: connection.providerUserId,
+                providerConnectionId,
+              });
+            }
+            await store.revokeBankFeedConnection({ organizationId, providerConnectionId });
             await store.addAuditEvent({
               organizationId,
               userId: user.id,
