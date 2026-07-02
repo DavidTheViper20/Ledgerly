@@ -11,7 +11,7 @@ const { createCloudClient } = require('../src/services/cloud/client');
 const { createDesktopCloudAuth, loadAuthConfig } = require('../src/services/cloud/auth');
 const cloudSession = require('../src/services/cloud/session');
 const localLock = require('../src/services/security/local-lock');
-const { waitForLoopbackCallback } = require('./cloud-auth-loopback');
+const { startLoopbackCallback } = require('./cloud-auth-loopback');
 const {
   registerContentSecurityPolicy,
   secureBrowserWindowOptions,
@@ -199,7 +199,7 @@ app.whenReady().then(() => {
     config: loadAuthConfig(process.env),
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
-    waitForCallback: waitForLoopbackCallback,
+    waitForCallback: startLoopbackCallback,
   });
   // Legacy dev/test token path (SQLite settings or env vars). Hard-disabled
   // in packaged/production builds — those must use the PKCE sign-in flow.

@@ -32,7 +32,10 @@ function loadAuthConfig(env = process.env) {
   const issuer = trimSlash(env.LEDGERLY_AUTH_ISSUER || env.OIDC_ISSUER);
   const clientId = String(env.LEDGERLY_AUTH_CLIENT_ID || env.OIDC_CLIENT_ID || '').trim();
   const audience = String(env.LEDGERLY_AUTH_AUDIENCE || env.OIDC_AUDIENCE || '').trim();
-  const redirectUri = String(env.LEDGERLY_AUTH_REDIRECT_URI || 'http://127.0.0.1:38987/auth/callback').trim();
+  // Portless loopback URI = bind an ephemeral port at sign-in time (RFC 8252).
+  // Set LEDGERLY_AUTH_REDIRECT_URI with an explicit port only if the identity
+  // provider cannot ignore loopback ports.
+  const redirectUri = String(env.LEDGERLY_AUTH_REDIRECT_URI || 'http://127.0.0.1/auth/callback').trim();
   const scope = String(env.LEDGERLY_AUTH_SCOPE || DEFAULT_SCOPE).trim();
   return {
     issuer,
@@ -219,14 +222,18 @@ function createDesktopCloudAuth({
     assertConfigured(config);
     if (!openExternal) throw new Error('Ledgerly Cloud sign-in cannot open the system browser');
     if (!waitForCallback) throw new Error('Ledgerly Cloud sign-in callback handler is not configured');
-    const request = buildAuthorizeUrl(config);
-    const callbackPromise = waitForCallback({
-      state: request.state,
+    const pkce = generatePkce();
+    // The listener may bind an ephemeral port and hand back the effective
+    // redirect URI; the authorize request and token exchange must both use it.
+    const listener = await waitForCallback({
+      state: pkce.state,
       redirectUri: config.redirectUri,
       timeoutMs: 120_000,
     });
+    const redirectUri = listener?.redirectUri || config.redirectUri;
+    const request = buildAuthorizeUrl({ ...config, redirectUri }, pkce);
     await openExternal(request.url);
-    const callback = await callbackPromise;
+    const callback = await (listener?.callback || listener);
     if (callback.error) throw new Error(callback.errorDescription || callback.error);
     if (!callback.code) throw new Error('Ledgerly Cloud sign-in did not return an authorization code');
     if (callback.state !== request.state) throw new Error('Ledgerly Cloud sign-in state did not match');
@@ -235,7 +242,7 @@ function createDesktopCloudAuth({
       client_id: config.clientId,
       code: callback.code,
       code_verifier: request.codeVerifier,
-      redirect_uri: config.redirectUri,
+      redirect_uri: redirectUri,
     }, fetchImpl);
     saveTokens(tokens, { requireRefresh: true });
     return publicStatus();

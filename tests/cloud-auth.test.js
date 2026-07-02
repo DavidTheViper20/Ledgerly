@@ -9,6 +9,7 @@ const {
   createDesktopCloudAuth,
   loadAuthConfig,
 } = require('../src/services/cloud/auth');
+const { startLoopbackCallback } = require('../electron/cloud-auth-loopback');
 
 let db;
 beforeEach(() => { db = dbm.open(':memory:'); });
@@ -59,6 +60,93 @@ test('cloud auth: builds Auth0 PKCE URL without exposing the verifier', () => {
   assert.match(url.searchParams.get('scope'), /openid/);
   assert.match(url.searchParams.get('scope'), /offline_access/);
   assert.doesNotMatch(request.url, /verifier-secret/);
+});
+
+test('cloud auth loopback: binds an ephemeral port and returns the effective redirect URI', async () => {
+  const listener = await startLoopbackCallback({
+    redirectUri: 'http://127.0.0.1/auth/callback',
+    state: 'state-xyz',
+    timeoutMs: 5000,
+  });
+  const url = new URL(listener.redirectUri);
+
+  assert.equal(url.hostname, '127.0.0.1');
+  assert.equal(url.pathname, '/auth/callback');
+  assert.ok(Number(url.port) > 0, 'expected a bound ephemeral port');
+
+  const res = await fetch(`${listener.redirectUri}?code=code-1&state=state-xyz`);
+  assert.equal(res.status, 200);
+  const payload = await listener.callback;
+  assert.equal(payload.code, 'code-1');
+  assert.equal(payload.state, 'state-xyz');
+});
+
+test('cloud auth loopback: rejects callbacks with a mismatched state', async () => {
+  const listener = await startLoopbackCallback({
+    redirectUri: 'http://127.0.0.1/auth/callback',
+    state: 'expected-state',
+    timeoutMs: 5000,
+  });
+
+  const rejection = assert.rejects(listener.callback, /callback was invalid/);
+  const res = await fetch(`${listener.redirectUri}?code=code-1&state=forged-state`);
+  assert.equal(res.status, 400);
+  await rejection;
+});
+
+test('cloud auth loopback: reports a fixed port that is already in use', async () => {
+  const listener = await startLoopbackCallback({
+    redirectUri: 'http://127.0.0.1/auth/callback',
+    state: 's',
+    timeoutMs: 5000,
+  });
+  const busyPort = new URL(listener.redirectUri).port;
+
+  await assert.rejects(
+    startLoopbackCallback({
+      redirectUri: `http://127.0.0.1:${busyPort}/auth/callback`,
+      state: 's2',
+      timeoutMs: 5000,
+    }),
+    /already in use/,
+  );
+  await fetch(`${listener.redirectUri}?code=c&state=s`);
+  await listener.callback;
+});
+
+test('cloud auth: sign-in over a real ephemeral loopback uses the bound port end to end', async () => {
+  const opened = [];
+  const tokenCalls = [];
+  const auth = createDesktopCloudAuth({
+    getDb: () => db,
+    config: authConfig({ LEDGERLY_AUTH_REDIRECT_URI: 'http://127.0.0.1/auth/callback' }),
+    safeStorage: fakeSafeStorage(),
+    waitForCallback: startLoopbackCallback,
+    openExternal: async (authorizeUrl) => {
+      opened.push(authorizeUrl);
+      const params = new URL(authorizeUrl).searchParams;
+      const redirect = new URL(params.get('redirect_uri'));
+      redirect.searchParams.set('code', 'loopback-code-1');
+      redirect.searchParams.set('state', params.get('state'));
+      await fetch(redirect.toString());
+    },
+    fetch: async (url, init) => {
+      tokenCalls.push({ url: String(url), body: String(init.body) });
+      return new Response(JSON.stringify({
+        access_token: jwt({ sub: 'auth0|user-1', email: 'owner@example.com', exp: Math.floor(Date.now() / 1000) + 3600 }),
+        refresh_token: 'refresh-secret-1',
+        expires_in: 3600,
+        token_type: 'Bearer',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+
+  const status = await auth.signIn();
+
+  assert.equal(status.signedIn, true);
+  const redirectParam = new URL(opened[0]).searchParams.get('redirect_uri');
+  assert.ok(Number(new URL(redirectParam).port) > 0, 'authorize URL must carry the bound port');
+  assert.match(tokenCalls[0].body, new RegExp(`redirect_uri=${encodeURIComponent(redirectParam).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
 });
 
 test('cloud auth: sign-in exchanges code, encrypts refresh token, and keeps access token in memory', async () => {
