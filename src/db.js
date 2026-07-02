@@ -501,9 +501,6 @@ CREATE INDEX IF NOT EXISTS idx_jl_account ON journal_lines(account_id);
 CREATE INDEX IF NOT EXISTS idx_journals_date ON journals(date);
 CREATE INDEX IF NOT EXISTS idx_inv_status ON invoices(kind, status);
 CREATE INDEX IF NOT EXISTS idx_stmt_bank ON statement_lines(bank_account_id, status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_statement_source_tx
-  ON statement_lines(source_provider, source_transaction_id)
-  WHERE source_provider IS NOT NULL AND source_transaction_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_reconciliations_statement ON reconciliations(statement_line_id, unreconciled_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_connection_provider
   ON bank_feed_connections(provider, provider_user_id, provider_connection_id);

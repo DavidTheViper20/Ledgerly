@@ -10,6 +10,41 @@ let db;
 beforeEach(() => { db = dbm.open(':memory:'); });
 const call = (m, a) => api.call(db, m, a);
 
+test('db upgrade: opening a pre-bank-feeds database adds feed columns without crashing', () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ledgerly-legacy-')), 'org.db');
+
+  // Simulate a database created before bank feeds existed: statement_lines
+  // without the source_* columns (so the dedupe index cannot exist yet).
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`CREATE TABLE statement_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_account_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    payee TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    reference TEXT DEFAULT '',
+    amount_cents INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'UNMATCHED',
+    matched_kind TEXT,
+    matched_id INTEGER,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  legacy.close();
+
+  const upgraded = dbm.open(file);
+  const cols = upgraded.prepare('PRAGMA table_info(statement_lines)').all().map(c => c.name);
+  assert.ok(cols.includes('source_provider'));
+  assert.ok(cols.includes('source_transaction_id'));
+  const indexes = upgraded.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(r => r.name);
+  assert.ok(indexes.includes('idx_statement_source_tx'), 'dedupe index must exist after upgrade');
+  upgraded.close();
+  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+});
+
 function setupBank() {
   return call('bank.createAccount', { name: 'Business Feed Account', code: '092' });
 }
