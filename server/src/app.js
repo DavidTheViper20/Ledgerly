@@ -4,6 +4,7 @@ const http = require('node:http');
 
 const { loadConfig } = require('./config');
 const { createRemoteJwksVerifier, verifyBearerAuth } = require('./auth/verify-token');
+const { createStaticTokenVerifier } = require('./auth/static-token');
 const { can } = require('./auth/roles');
 const { createMemoryStore } = require('./db/memory-store');
 const { createPostgresStore } = require('./db/postgres-store');
@@ -123,16 +124,23 @@ function createDefaultStore(config) {
   return createPostgresStore({ databaseUrl: config.databaseUrl });
 }
 
+function createDefaultVerifier(config) {
+  if (config.authMode === 'static') {
+    return createStaticTokenVerifier({ staticToken: config.staticToken });
+  }
+  return createRemoteJwksVerifier({
+    issuer: config.oidcIssuer,
+    audience: config.oidcAudience,
+    jwksUrl: config.oidcJwksUrl,
+  });
+}
+
 function createServer({
   config = loadConfig(),
   logger = console,
   store = createDefaultStore(config),
   basiqClient = createBasiqClient({ apiKey: config.basiqApiKey }),
-  verifyToken = createRemoteJwksVerifier({
-    issuer: config.oidcIssuer,
-    audience: config.oidcAudience,
-    jwksUrl: config.oidcJwksUrl,
-  }),
+  verifyToken = createDefaultVerifier(config),
   rateLimit = { windowMs: 60_000, max: 120 },
 } = {}) {
   const checkRateLimit = createRateLimiter(rateLimit);

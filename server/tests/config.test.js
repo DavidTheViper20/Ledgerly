@@ -31,11 +31,13 @@ test('config: parses required production settings and hides secrets in safe summ
   assert.deepEqual(summary, {
     appEnv: 'production',
     port: 4567,
+    authMode: 'oidc',
     oidcIssuer: 'https://ledgerly.au.auth0.com/',
     oidcAudience: 'https://api.ledgerly.example',
     corsOrigins: ['ledgerly://desktop', 'https://app.ledgerly.example'],
     hasDatabaseUrl: true,
     hasBasiqApiKey: true,
+    hasStaticToken: false,
   });
   assert.doesNotMatch(JSON.stringify(summary), /basiq-secret-key|ledgerly:secret/);
 });
