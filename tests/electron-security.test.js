@@ -11,6 +11,16 @@ const {
   validateCloudSessionRequest,
   validateExternalUrl,
 } = require('../electron/security');
+const dbm = require('../src/db');
+const { createDesktopCloudAuth } = require('../src/services/cloud/auth');
+
+function fakeSafeStorage() {
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`encrypted:${value}`, 'utf8'),
+    decryptString: (buffer) => Buffer.from(buffer).toString('utf8').replace(/^encrypted:/, ''),
+  };
+}
 
 test('electron security: browser defaults are sandboxed and CSP blocks remote code', () => {
   const options = secureBrowserWindowOptions({ preload: '/tmp/preload.js' });
@@ -37,7 +47,22 @@ test('electron security: bank-feed IPC validation rejects unknown methods, bad s
   assert.throws(() => validateBankFeedRequest('missingMethod', {}), /Unknown bank feed method/);
 });
 
-test('electron security: cloud-session IPC exposes sign-out but never token getters', () => {
+test('electron security: cloud-auth IPC allows exactly status/signIn/refresh/signOut', () => {
+  for (const method of ['status', 'signIn', 'refresh', 'signOut']) {
+    assert.deepEqual(validateCloudAuthRequest(method, {}), {}, `${method} should return an empty arg set`);
+  }
+  for (const method of ['getToken', 'save', 'exchange', '']) {
+    assert.throws(() => validateCloudAuthRequest(method, {}), /Unknown cloud auth method/);
+  }
+});
+
+test('electron security: cloud-auth IPC rejects secret-looking args', () => {
+  assert.throws(() => validateCloudAuthRequest('signIn', { accessToken: 'secret' }), /not allowed/i);
+  assert.throws(() => validateCloudAuthRequest('refresh', { refresh_token: 'secret' }), /not allowed/i);
+  assert.throws(() => validateCloudAuthRequest('status', { apiKey: 'secret' }), /not allowed/i);
+});
+
+test('electron security: cloud-session IPC allows exactly status/save/signOut', () => {
   assert.deepEqual(validateCloudSessionRequest('status', {}), {});
   assert.deepEqual(validateCloudSessionRequest('signOut', {}), {});
   assert.deepEqual(validateCloudSessionRequest('save', {
@@ -47,18 +72,37 @@ test('electron security: cloud-session IPC exposes sign-out but never token gett
     sessionToken: 'session-token-1',
     organizationId: 'org_0001',
   });
-  assert.throws(() => validateCloudSessionRequest('getToken', {}), /Unknown cloud session method/);
+  for (const method of ['getToken', 'refresh', 'signIn', '']) {
+    assert.throws(() => validateCloudSessionRequest(method, {}), /Unknown cloud session method/);
+  }
+});
+
+test('electron security: cloud-session save requires sessionToken and organizationId', () => {
+  assert.throws(() => validateCloudSessionRequest('save', { organizationId: 'org_0001' }), /sessionToken is required/i);
+  assert.throws(() => validateCloudSessionRequest('save', { sessionToken: 'session-token-1' }), /organizationId is required/i);
+});
+
+test('electron security: cloud-session IPC rejects secret keys outside the allowlist', () => {
+  assert.throws(() => validateCloudSessionRequest('save', {
+    sessionToken: 'session-token-1',
+    organizationId: 'org_0001',
+    providerToken: 'secret',
+  }), /not allowed/i);
   assert.throws(() => validateCloudSessionRequest('save', { basiqApiKey: 'secret' }), /not allowed/i);
 });
 
-test('electron security: cloud-auth IPC supports auth commands without token getters', () => {
-  assert.deepEqual(validateCloudAuthRequest('status', {}), {});
-  assert.deepEqual(validateCloudAuthRequest('signIn', {}), {});
-  assert.deepEqual(validateCloudAuthRequest('refresh', {}), {});
-  assert.deepEqual(validateCloudAuthRequest('signOut', {}), {});
-  assert.throws(() => validateCloudAuthRequest('getToken', {}), /Unknown cloud auth method/);
-  assert.throws(() => validateCloudAuthRequest('signIn', { accessToken: 'secret' }), /not allowed/i);
-  assert.throws(() => validateCloudAuthRequest('refresh', { refreshToken: 'secret' }), /not allowed/i);
+test('electron security: desktop cloud auth publicStatus never leaks token material', () => {
+  const db = dbm.open(':memory:');
+  const auth = createDesktopCloudAuth({
+    getDb: () => db,
+    config: { configured: true },
+    safeStorage: fakeSafeStorage(),
+  });
+  const status = auth.publicStatus();
+  assert.deepEqual(
+    Object.keys(status),
+    ['configured', 'signedIn', 'email', 'name', 'expiresAt', 'organizationId'],
+  );
 });
 
 test('electron security: external URL validation allows only safe outbound schemes', () => {
