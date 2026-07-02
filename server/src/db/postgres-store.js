@@ -496,6 +496,7 @@ function createPostgresStore({ databaseUrl, pool = createPool({ databaseUrl }) }
     skippedCount = 0,
     errorMessage = '',
     result = null,
+    syncCursor = '',
   }) {
     return withTransaction(async (client) => {
       const syncResult = await client.query(
@@ -516,9 +517,10 @@ function createPostgresStore({ databaseUrl, pool = createPool({ databaseUrl }) }
         await client.query(
           `UPDATE bank_feed_accounts
               SET last_sync_at = $2,
+                  sync_cursor = COALESCE(NULLIF($3, ''), sync_cursor),
                   updated_at = now()
             WHERE id = $1`,
-          [row.bank_feed_account_id, row.finished_at],
+          [row.bank_feed_account_id, row.finished_at, syncCursor],
         );
         await client.query(
           `UPDATE bank_feed_connections c

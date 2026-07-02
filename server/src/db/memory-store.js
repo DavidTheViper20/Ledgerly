@@ -409,6 +409,7 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
     skippedCount = 0,
     errorMessage = '',
     result = null,
+    syncCursor = '',
   }) {
     const row = syncRuns.get(syncRunId);
     if (!row) throw new Error('Bank feed sync run not found');
@@ -423,6 +424,7 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
         if (account.id === row.bankFeedAccountId) {
           account.lastSyncAt = row.finishedAt;
           account.updatedAt = now();
+          if (syncCursor) account.syncCursor = syncCursor;
           const connection = Array.from(bankConnections.values()).find(c => c.id === account.connectionId);
           if (connection) {
             connection.lastSyncAt = row.finishedAt;

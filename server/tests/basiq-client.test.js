@@ -75,6 +75,64 @@ test('basiq client: creates user and client token scoped to that user', async ()
   assert.equal(calls.length, 3);
 });
 
+test('basiq client: transactions follow pagination and return an advanced cursor', async () => {
+  const requested = [];
+  const client = createBasiqClient({
+    apiKey: 'basiq-secret-key',
+    fetch: async (url) => {
+      if (url.endsWith('/token')) return jsonResponse({ access_token: 'server-token-1', expires_in: 3600 });
+      requested.push(String(url));
+      if (String(url).includes('page=2')) {
+        return jsonResponse({
+          data: [{ id: 'tx-3', postDate: '2026-07-01', description: 'Rent', amount: '-500.00' }],
+          links: {},
+        });
+      }
+      return jsonResponse({
+        data: [
+          { id: 'tx-1', postDate: '2026-06-28', description: 'Coffee', amount: '-12.99' },
+          { id: 'tx-2', postDate: '2026-06-30', description: 'Sale', amount: '250.00' },
+        ],
+        links: { next: 'https://au-api.basiq.io/users/basiq-user-1/transactions?page=2' },
+      });
+    },
+  });
+
+  const { transactions, nextCursor } = await client.listTransactions({
+    userId: 'basiq-user-1',
+    providerAccountId: 'acc-1',
+    syncCursor: '2026-06-27',
+  });
+
+  assert.equal(transactions.length, 3);
+  assert.deepEqual(transactions.map(tx => tx.sourceTransactionId), ['tx-1', 'tx-2', 'tx-3']);
+  assert.deepEqual(transactions.map(tx => tx.amountCents), [-1299, 25000, -50000]);
+  assert.equal(nextCursor, '2026-07-01');
+  // First request filters by account and re-fetches from the stored cursor day.
+  assert.match(decodeURIComponent(requested[0]), /account\.id\.eq\('acc-1'\)/);
+  assert.match(decodeURIComponent(requested[0]), /transaction\.postDate\.gteq\('2026-06-27'\)/);
+  assert.equal(requested.length, 2);
+});
+
+test('basiq client: empty transaction page keeps the previous cursor', async () => {
+  const client = createBasiqClient({
+    apiKey: 'basiq-secret-key',
+    fetch: async (url) => {
+      if (url.endsWith('/token')) return jsonResponse({ access_token: 'server-token-1', expires_in: 3600 });
+      return jsonResponse({ data: [], links: {} });
+    },
+  });
+
+  const { transactions, nextCursor } = await client.listTransactions({
+    userId: 'basiq-user-1',
+    providerAccountId: 'acc-1',
+    syncCursor: '2026-06-27',
+  });
+
+  assert.deepEqual(transactions, []);
+  assert.equal(nextCursor, '2026-06-27');
+});
+
 test('basiq client: lists provider accounts and maps Basiq errors to stable errors', async () => {
   const client = createBasiqClient({
     apiKey: 'basiq-secret-key',

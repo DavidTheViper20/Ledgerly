@@ -137,7 +137,8 @@ function createBasiqClient({
 
   async function authenticatedGet(path, context) {
     const token = await getServerToken();
-    const res = await fetchImpl(`${baseUrl}${path}`, {
+    const target = /^https?:\/\//.test(path) ? path : `${baseUrl}${path}`;
+    const res = await fetchImpl(target, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -153,16 +154,32 @@ function createBasiqClient({
     return (data.data || []).map(mapBasiqAccount);
   }
 
-  async function listTransactions({ userId, providerAccountId, syncCursor = '' } = {}) {
+  // Incremental pull: syncCursor is the last post date (YYYY-MM-DD) already
+  // seen for this account. We re-fetch from that day (inclusive, so boundary
+  // transactions are never missed — the desktop dedupe drops repeats) and
+  // follow Basiq's pagination links. Returns { transactions, nextCursor }.
+  async function listTransactions({ userId, providerAccountId, syncCursor = '', maxPages = 20 } = {}) {
     if (!userId) throw new Error('Basiq userId is required');
     if (!providerAccountId) throw new Error('Basiq providerAccountId is required');
-    const params = new URLSearchParams({ filter: `account.id.eq('${providerAccountId}')` });
-    if (syncCursor) params.set('next', syncCursor);
-    const data = await authenticatedGet(
-      `/users/${encodeURIComponent(userId)}/transactions?${params.toString()}`,
-      'Basiq list transactions',
-    );
-    return (data.data || []).map(tx => mapBasiqTransaction(tx, providerAccountId));
+    const filters = [`account.id.eq('${providerAccountId}')`];
+    if (syncCursor) filters.push(`transaction.postDate.gteq('${syncCursor}')`);
+    const params = new URLSearchParams({ filter: filters.join(',') });
+
+    const transactions = [];
+    let next = `/users/${encodeURIComponent(userId)}/transactions?${params.toString()}`;
+    for (let page = 0; next && page < maxPages; page++) {
+      const data = await authenticatedGet(next, 'Basiq list transactions');
+      for (const tx of data.data || []) {
+        transactions.push(mapBasiqTransaction(tx, providerAccountId));
+      }
+      next = data.links?.next || '';
+    }
+
+    let nextCursor = syncCursor;
+    for (const tx of transactions) {
+      if (tx.date && tx.date > nextCursor) nextCursor = tx.date;
+    }
+    return { transactions, nextCursor };
   }
 
   async function getJob({ jobId } = {}) {

@@ -350,11 +350,15 @@ function createServer({
               return;
             }
             try {
-              const transactions = await basiqClient.listTransactions({
+              const listed = await basiqClient.listTransactions({
                 userId: connection.providerUserId,
                 providerAccountId: account.providerAccountId,
                 syncCursor: account.syncCursor || '',
               });
+              // Clients return { transactions, nextCursor }; plain arrays are
+              // accepted for fakes/backwards compatibility (no cursor advance).
+              const transactions = Array.isArray(listed) ? listed : listed.transactions || [];
+              const nextCursor = Array.isArray(listed) ? '' : listed.nextCursor || '';
               const result = {
                 provider: 'basiq',
                 account,
@@ -366,6 +370,7 @@ function createServer({
                 importedCount: transactions.length,
                 skippedCount: 0,
                 result,
+                syncCursor: nextCursor,
               });
               await store.addAuditEvent({
                 organizationId,

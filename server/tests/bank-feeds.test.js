@@ -273,6 +273,47 @@ test('bank feeds: sync returns normalized transactions and replays idempotent sy
   });
 });
 
+test('bank feeds: sync cursor advances between runs so pulls stay incremental', async () => {
+  const basiqClient = fakeBasiqClient();
+  const pages = [
+    { transactions: [{ sourceAccountId: 'acc-1', sourceTransactionId: 'tx-1', date: '2026-06-28', description: 'Coffee', amountCents: -1299 }], nextCursor: '2026-06-28' },
+    { transactions: [{ sourceAccountId: 'acc-1', sourceTransactionId: 'tx-2', date: '2026-06-30', description: 'Sale', amountCents: 25000 }], nextCursor: '2026-06-30' },
+  ];
+  basiqClient.listTransactions = async (input) => {
+    basiqClient.calls.push(['listTransactions', input]);
+    return pages.shift();
+  };
+
+  await withServer({ basiqClient }, async ({ baseUrl, organizationId }) => {
+    await jsonFetch(baseUrl, '/v1/bank-feeds/connect/start', {
+      method: 'POST',
+      body: { organizationId, email: 'owner@example.com' },
+    });
+    await jsonFetch(baseUrl, '/v1/bank-feeds/account-links', {
+      method: 'POST',
+      body: { organizationId, providerAccountId: 'acc-1', desktopBankAccountLocalId: '17' },
+    });
+
+    const first = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+    const second = await jsonFetch(baseUrl, '/v1/bank-feeds/sync', {
+      method: 'POST',
+      body: { organizationId, providerAccountId: 'acc-1' },
+    });
+
+    assert.equal(first.res.status, 200);
+    assert.equal(second.res.status, 200);
+    const syncCalls = basiqClient.calls.filter(([name]) => name === 'listTransactions');
+    assert.equal(syncCalls[0][1].syncCursor, '', 'first sync starts with no cursor');
+    assert.equal(syncCalls[1][1].syncCursor, '2026-06-28', 'second sync resumes from the stored cursor');
+
+    const status = await jsonFetch(baseUrl, `/v1/bank-feeds/status?organizationId=${organizationId}`);
+    assert.equal(status.body.accountLinks[0].syncCursor, '2026-06-30');
+  });
+});
+
 test('bank feeds: failed sync run is audited without exposing provider secrets', async () => {
   const basiqClient = fakeBasiqClient();
   basiqClient.listTransactions = async (input) => {
