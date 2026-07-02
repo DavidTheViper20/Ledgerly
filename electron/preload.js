@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('ledgerly', {
     if (!res.ok) throw new Error(res.error);
     return res.data;
   },
+  async cloudAuth(method, args) {
+    const res = await ipcRenderer.invoke('cloud-auth', method, args);
+    if (!res.ok) throw new Error(res.error);
+    return res.data;
+  },
   async security(method, args) {
     const res = await ipcRenderer.invoke('security', method, args);
     if (!res.ok) throw new Error(res.error);

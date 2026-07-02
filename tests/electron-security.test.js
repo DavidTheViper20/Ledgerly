@@ -7,6 +7,7 @@ const {
   contentSecurityPolicy,
   secureBrowserWindowOptions,
   validateBankFeedRequest,
+  validateCloudAuthRequest,
   validateCloudSessionRequest,
   validateExternalUrl,
 } = require('../electron/security');
@@ -48,6 +49,16 @@ test('electron security: cloud-session IPC exposes sign-out but never token gett
   });
   assert.throws(() => validateCloudSessionRequest('getToken', {}), /Unknown cloud session method/);
   assert.throws(() => validateCloudSessionRequest('save', { basiqApiKey: 'secret' }), /not allowed/i);
+});
+
+test('electron security: cloud-auth IPC supports auth commands without token getters', () => {
+  assert.deepEqual(validateCloudAuthRequest('status', {}), {});
+  assert.deepEqual(validateCloudAuthRequest('signIn', {}), {});
+  assert.deepEqual(validateCloudAuthRequest('refresh', {}), {});
+  assert.deepEqual(validateCloudAuthRequest('signOut', {}), {});
+  assert.throws(() => validateCloudAuthRequest('getToken', {}), /Unknown cloud auth method/);
+  assert.throws(() => validateCloudAuthRequest('signIn', { accessToken: 'secret' }), /not allowed/i);
+  assert.throws(() => validateCloudAuthRequest('refresh', { refreshToken: 'secret' }), /not allowed/i);
 });
 
 test('electron security: external URL validation allows only safe outbound schemes', () => {

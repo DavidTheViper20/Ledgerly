@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, session: electronSession } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session: electronSession, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -8,12 +8,15 @@ const dbm = require('../src/db');
 const api = require('../src/api');
 const cloudBankFeedFlow = require('../src/services/cloud/bank-feed-flow');
 const { createCloudClient } = require('../src/services/cloud/client');
+const { createDesktopCloudAuth, loadAuthConfig } = require('../src/services/cloud/auth');
 const cloudSession = require('../src/services/cloud/session');
 const localLock = require('../src/services/security/local-lock');
+const { waitForLoopbackCallback } = require('./cloud-auth-loopback');
 const {
   registerContentSecurityPolicy,
   secureBrowserWindowOptions,
   validateBankFeedRequest,
+  validateCloudAuthRequest,
   validateCloudSessionRequest,
   validateExternalUrl,
 } = require('./security');
@@ -191,12 +194,25 @@ app.whenReady().then(() => {
     }
   });
 
-  const bankFeedCloudClient = createCloudClient({
-    baseUrl: process.env.LEDGERLY_CLOUD_URL || '',
-    getSessionToken: () => cloudSession.getSession(db).sessionToken ||
+  const cloudAuth = createDesktopCloudAuth({
+    getDb: () => db,
+    config: loadAuthConfig(process.env),
+    safeStorage,
+    openExternal: (url) => shell.openExternal(url),
+    waitForCallback: waitForLoopbackCallback,
+  });
+  function legacyCloudToken() {
+    return cloudSession.getSession(db).sessionToken ||
       process.env.LEDGERLY_CLOUD_TOKEN ||
       process.env.LEDGERLY_SESSION_TOKEN ||
-      '',
+      '';
+  }
+  const bankFeedCloudClient = createCloudClient({
+    baseUrl: process.env.LEDGERLY_CLOUD_URL || '',
+    getSessionToken: async () => {
+      try { return await cloudAuth.getAccessToken(); } catch { return legacyCloudToken(); }
+    },
+    hasSessionToken: () => cloudAuth.hasSession() || Boolean(legacyCloudToken()),
     organizationId: process.env.LEDGERLY_CLOUD_ORG_ID || '',
   });
   function cloudOrgId(args = {}) {
@@ -289,10 +305,29 @@ app.whenReady().then(() => {
     }
   });
 
+  const CLOUD_AUTH_METHODS = {
+    status: () => cloudAuth.publicStatus(),
+    signIn: () => cloudAuth.signIn(),
+    refresh: () => cloudAuth.refresh().then(() => cloudAuth.publicStatus()),
+    signOut: () => cloudAuth.signOut(),
+  };
+  ipcMain.handle('cloud-auth', async (_e, method, args) => {
+    try {
+      const fn = CLOUD_AUTH_METHODS[method];
+      if (!fn) throw new Error('Unknown cloud auth method: ' + method);
+      return { ok: true, data: await fn(validateCloudAuthRequest(method, args || {})) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   const CLOUD_SESSION_METHODS = {
     status: () => cloudSession.publicStatus(db),
     save: (a) => cloudSession.saveSession(db, a),
-    signOut: () => cloudSession.signOut(db),
+    signOut: () => {
+      cloudAuth.signOut();
+      return cloudSession.signOut(db);
+    },
   };
   ipcMain.handle('cloud-session', async (_e, method, args) => {
     try {

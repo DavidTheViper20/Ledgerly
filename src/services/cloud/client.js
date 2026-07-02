@@ -12,6 +12,7 @@ function createCloudClient({
   baseUrl = '',
   sessionToken = '',
   getSessionToken,
+  hasSessionToken,
   organizationId = '',
   fetch: fetchImpl = global.fetch,
 } = {}) {
@@ -21,7 +22,7 @@ function createCloudClient({
 
   function publicStatus() {
     return {
-      configured: Boolean(root && tokenProvider()),
+      configured: Boolean(root && (hasSessionToken ? hasSessionToken() : tokenProvider())),
       baseUrl: root,
       organizationConfigured: Boolean(organizationId),
     };

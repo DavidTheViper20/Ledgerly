@@ -1,0 +1,42 @@
+services:
+  - type: web
+    runtime: node
+    name: ledgerly-cloud-staging
+    rootDir: server
+    region: singapore
+    plan: starter
+    buildCommand: npm ci
+    preDeployCommand: npm run migrate
+    startCommand: npm start
+    healthCheckPath: /readyz
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_ENV
+        value: staging
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ledgerly-cloud-staging-db
+          property: connectionString
+      - key: OIDC_ISSUER
+        sync: false
+      - key: OIDC_AUDIENCE
+        sync: false
+      - key: OIDC_JWKS_URL
+        sync: false
+      - key: BASIQ_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+databases:
+  - name: ledgerly-cloud-staging-db
+    databaseName: ledgerly_staging
+    user: ledgerly_staging
+    region: singapore
+    plan: basic-256mb
+    postgresMajorVersion: '18'
+    ipAllowList: []

@@ -7,8 +7,13 @@ VIEWS.settingsView = async function (main) {
   try { orgs = await window.ledgerly.orgs('list'); } catch { /* env-pinned db */ }
   let feed = { configured: false, connections: [], accountLinks: [] };
   try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
+  let cloudAuth = { configured: false, signedIn: false, organizationId: '' };
+  try { cloudAuth = await window.ledgerly.cloudAuth('status'); } catch { /* older shell */ }
   let cloudSession = { signedIn: false, organizationId: '' };
   try { cloudSession = await window.ledgerly.cloudSession('status'); } catch { /* older shell */ }
+  const cloudSignedIn = Boolean(cloudAuth.signedIn || cloudSession.signedIn);
+  const cloudIdentity = cloudAuth.email || cloudAuth.name || (cloudSignedIn ? 'Signed in' : 'Not signed in');
+  const cloudOrgId = cloudAuth.organizationId || cloudSession.organizationId || '';
   let appLock = { enabled: false, configured: false, locked: false };
   try { appLock = await window.ledgerly.security('status'); } catch { /* older shell */ }
   const cloud = feed.cloud || {};
@@ -116,13 +121,20 @@ VIEWS.settingsView = async function (main) {
             <h2>Bank feeds</h2>
             ${feedStatusBadge}
           </div>
+          <div class="mini-grid" style="margin-bottom:10px">
+            <div class="mini-card"><div>Cloud account</div><b>${cloudSignedIn ? 'Signed in' : (cloudAuth.configured ? 'Ready' : 'Not configured')}</b></div>
+            <div class="mini-card"><div>User</div><b>${esc(cloudIdentity)}</b></div>
+            <div class="mini-card"><div>Organisation</div><b>${cloudOrgId ? esc(cloudOrgId) : 'Not linked'}</b></div>
+          </div>
           <div class="btn-row" style="margin-bottom:10px">
+            <button class="btn primary" id="btn-cloud-signin" ${cloudAuth.configured && !cloudSignedIn ? '' : 'disabled'}>Sign in to Ledgerly Cloud</button>
+            <button class="btn" id="btn-cloud-refresh" ${cloudSignedIn ? '' : 'disabled'}>Refresh session</button>
+            <button class="btn" id="btn-cloud-signout" ${cloudSignedIn ? '' : 'disabled'}>Sign out</button>
             <button class="btn primary" id="btn-bank-feed-connect" ${feed.configured ? '' : 'disabled title="Connect Ledgerly Cloud first"'}>Connect bank account</button>
             <button class="btn" id="btn-bank-feed-manage" ${hasConnection ? '' : 'disabled'}>Manage consent</button>
             <button class="btn" id="btn-bank-feed-reconnect" ${hasConnection ? '' : 'disabled'}>Reconnect</button>
             <button class="btn danger" id="btn-bank-feed-revoke" ${hasConnection ? '' : 'disabled'} data-provider-connection-id="${esc(connectionIdForCloud)}">Revoke</button>
             <button class="btn danger" id="btn-bank-feed-delete-data" ${hasConnection ? '' : 'disabled'}>Delete feed data</button>
-            <button class="btn" id="btn-cloud-signout" ${cloudSession.signedIn ? '' : 'disabled'}>Sign out</button>
           </div>
           ${hasConnection ? `
             <div class="mini-grid" style="margin-bottom:10px">
@@ -382,9 +394,24 @@ VIEWS.settingsView = async function (main) {
       VIEWS.settingsView(main);
     } catch (e) { showError(e); }
   });
+  document.getElementById('btn-cloud-signin')?.addEventListener('click', async () => {
+    try {
+      await window.ledgerly.cloudAuth('signIn', {});
+      toast('Signed in to Ledgerly Cloud', 'success');
+      VIEWS.settingsView(main);
+    } catch (e) { showError(e); }
+  });
+  document.getElementById('btn-cloud-refresh')?.addEventListener('click', async () => {
+    try {
+      await window.ledgerly.cloudAuth('refresh', {});
+      toast('Ledgerly Cloud session refreshed', 'success');
+      VIEWS.settingsView(main);
+    } catch (e) { showError(e); }
+  });
   document.getElementById('btn-cloud-signout')?.addEventListener('click', async () => {
     if (!confirm('Sign out of Ledgerly Cloud on this device? Local accounting data stays in Ledgerly.')) return;
     try {
+      if (window.ledgerly.cloudAuth) await window.ledgerly.cloudAuth('signOut', {});
       await window.ledgerly.cloudSession('signOut', {});
       toast('Signed out of Ledgerly Cloud', 'success');
       VIEWS.settingsView(main);

@@ -1,6 +1,6 @@
 'use strict';
 
-const SECRET_KEY_RE = /(api[_-]?key|server[_-]?token|client[_-]?token|provider.*token|basiq.*key|access[_-]?token)/i;
+const SECRET_KEY_RE = /(api[_-]?key|server[_-]?token|client[_-]?token|provider.*token|basiq.*key|access[_-]?token|refresh[_-]?token)/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function contentSecurityPolicy() {
@@ -157,6 +157,19 @@ function validateCloudSessionRequest(method, args = {}) {
   }
 }
 
+function validateCloudAuthRequest(method, args = {}) {
+  rejectSecretKeys(args);
+  switch (method) {
+    case 'status':
+    case 'signIn':
+    case 'refresh':
+    case 'signOut':
+      return {};
+    default:
+      throw new Error('Unknown cloud auth method: ' + method);
+  }
+}
+
 function validateExternalUrl(value) {
   let url;
   try { url = new URL(String(value || '')); } catch { throw new Error('Unsupported external URL'); }
@@ -169,6 +182,7 @@ module.exports = {
   secureBrowserWindowOptions,
   registerContentSecurityPolicy,
   validateBankFeedRequest,
+  validateCloudAuthRequest,
   validateCloudSessionRequest,
   validateExternalUrl,
 };

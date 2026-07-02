@@ -6,6 +6,7 @@ const { loadConfig } = require('./config');
 const { createRemoteJwksVerifier, verifyBearerAuth } = require('./auth/verify-token');
 const { can } = require('./auth/roles');
 const { createMemoryStore } = require('./db/memory-store');
+const { createPostgresStore } = require('./db/postgres-store');
 const { createBasiqClient } = require('./providers/basiq-client');
 const { scrubSensitive } = require('./security/scrub');
 
@@ -54,12 +55,12 @@ function createRateLimiter({ windowMs = 60_000, max = 120 } = {}) {
 
 async function authenticate(req, { store, verifyToken }) {
   const claims = await verifyBearerAuth(req.headers, verifyToken);
-  const user = store.upsertUserFromClaims(claims);
+  const user = await store.upsertUserFromClaims(claims);
   return { claims, user };
 }
 
-function requireMembership(store, userId, organizationId, permission) {
-  const membership = store.membershipFor(userId, organizationId);
+async function requireMembership(store, userId, organizationId, permission) {
+  const membership = await store.membershipFor(userId, organizationId);
   if (!membership) {
     const err = new Error('Organization membership required');
     err.status = 403;
@@ -76,7 +77,7 @@ function requireMembership(store, userId, organizationId, permission) {
 }
 
 async function ensureBasiqUser({ store, basiqClient, organizationId, email, mobile }) {
-  const existing = store.getBankProviderUser({ organizationId, provider: 'basiq' });
+  const existing = await store.getBankProviderUser({ organizationId, provider: 'basiq' });
   if (existing) return existing;
   const user = await basiqClient.createUser({ email, mobile });
   return store.upsertBankProviderUser({
@@ -86,8 +87,8 @@ async function ensureBasiqUser({ store, basiqClient, organizationId, email, mobi
   });
 }
 
-function connectionOrError(store, organizationId) {
-  const connection = store.firstBankFeedConnection({ organizationId, provider: 'basiq' });
+async function connectionOrError(store, organizationId) {
+  const connection = await store.firstBankFeedConnection({ organizationId, provider: 'basiq' });
   if (!connection) {
     const err = new Error('Bank feed connection not found');
     err.status = 404;
@@ -97,8 +98,8 @@ function connectionOrError(store, organizationId) {
   return connection;
 }
 
-function accountOrError(store, organizationId, providerAccountId) {
-  const found = store.bankFeedAccountByProvider({ organizationId, providerAccountId });
+async function accountOrError(store, organizationId, providerAccountId) {
+  const found = await store.bankFeedAccountByProvider({ organizationId, providerAccountId });
   if (!found) {
     const err = new Error('Bank feed account link not found');
     err.status = 404;
@@ -117,10 +118,15 @@ function consentActiveOrError(connection) {
   }
 }
 
+function createDefaultStore(config) {
+  if (config.appEnv === 'test' || !config.databaseUrl) return createMemoryStore();
+  return createPostgresStore({ databaseUrl: config.databaseUrl });
+}
+
 function createServer({
   config = loadConfig(),
   logger = console,
-  store = createMemoryStore(),
+  store = createDefaultStore(config),
   basiqClient = createBasiqClient({ apiKey: config.basiqApiKey }),
   verifyToken = createRemoteJwksVerifier({
     issuer: config.oidcIssuer,
@@ -143,6 +149,27 @@ function createServer({
           return;
         }
 
+        if (req.method === 'GET' && url.pathname === '/readyz') {
+          try {
+            const readiness = store.healthCheck ? await store.healthCheck() : { ok: true, store: 'unknown' };
+            sendJson(res, 200, {
+              ok: true,
+              service: 'ledgerly-cloud',
+              appEnv: config.appEnv,
+              store: readiness.store,
+            });
+          } catch (err) {
+            logger.error?.('readiness_failed', scrubSensitive({ message: err.message, code: err.code }));
+            sendJson(res, 503, {
+              ok: false,
+              service: 'ledgerly-cloud',
+              appEnv: config.appEnv,
+              error: 'not_ready',
+            });
+          }
+          return;
+        }
+
         if (url.pathname.startsWith('/v1/')) {
           const limited = checkRateLimit(req);
           if (limited) {
@@ -158,9 +185,10 @@ function createServer({
           const { user } = await authenticate(req, { store, verifyToken });
 
           if (req.method === 'GET' && url.pathname === '/v1/me') {
-            const firstOrg = store.listOrganizationsForUser(user.id)[0];
+            const organizations = await store.listOrganizationsForUser(user.id);
+            const firstOrg = organizations[0];
             if (firstOrg) {
-              store.addAuditEvent({
+              await store.addAuditEvent({
                 organizationId: firstOrg.id,
                 userId: user.id,
                 eventType: 'auth.session_checked',
@@ -169,21 +197,21 @@ function createServer({
             }
             sendJson(res, 200, {
               user,
-              organizations: store.listOrganizationsForUser(user.id),
+              organizations,
             });
             return;
           }
 
           if (req.method === 'GET' && url.pathname === '/v1/organizations') {
             sendJson(res, 200, {
-              organizations: store.listOrganizationsForUser(user.id),
+              organizations: await store.listOrganizationsForUser(user.id),
             });
             return;
           }
 
           if (req.method === 'POST' && url.pathname === '/v1/organizations') {
             const body = await readJson(req);
-            const created = store.createOrganization({ userId: user.id, name: body.name });
+            const created = await store.createOrganization({ userId: user.id, name: body.name });
             sendJson(res, 201, created);
             return;
           }
@@ -191,7 +219,7 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/connect/start') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
             const providerUser = await ensureBasiqUser({
               store,
               basiqClient,
@@ -203,13 +231,13 @@ function createServer({
               userId: providerUser.providerUserId,
               action: 'connect',
             });
-            const connection = store.upsertBankFeedConnection({
+            const connection = await store.upsertBankFeedConnection({
               organizationId,
               provider: 'basiq',
               providerUserId: providerUser.providerUserId,
               consentStatus: 'pending',
             });
-            store.addAuditEvent({
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               eventType: 'bank_feed.consent_started',
@@ -225,21 +253,21 @@ function createServer({
 
           if (req.method === 'GET' && url.pathname === '/v1/bank-feeds/status') {
             const organizationId = url.searchParams.get('organizationId');
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
             sendJson(res, 200, {
               provider: 'basiq',
               configured: true,
-              connections: store.listBankFeedConnections({ organizationId, provider: 'basiq' }),
-              accountLinks: store.listBankFeedAccounts({ organizationId }),
-              syncRuns: store.listBankFeedSyncRuns({ organizationId }),
+              connections: await store.listBankFeedConnections({ organizationId, provider: 'basiq' }),
+              accountLinks: await store.listBankFeedAccounts({ organizationId }),
+              syncRuns: await store.listBankFeedSyncRuns({ organizationId }),
             });
             return;
           }
 
           if (req.method === 'GET' && url.pathname === '/v1/bank-feeds/provider-accounts') {
             const organizationId = url.searchParams.get('organizationId');
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
-            const providerUser = store.getBankProviderUser({ organizationId, provider: 'basiq' });
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const providerUser = await store.getBankProviderUser({ organizationId, provider: 'basiq' });
             if (!providerUser) {
               sendJson(res, 404, errorBody('not_found', 'Bank provider user not found'));
               return;
@@ -253,19 +281,19 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/account-links') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
             const connection = body.connectionId
-              ? store.bankFeedConnectionById({ organizationId, connectionId: body.connectionId })
-              : connectionOrError(store, organizationId);
+              ? await store.bankFeedConnectionById({ organizationId, connectionId: body.connectionId })
+              : await connectionOrError(store, organizationId);
             if (!connection) {
               sendJson(res, 404, errorBody('not_found', 'Bank feed connection not found'));
               return;
             }
-            const existed = store.bankFeedAccountByProvider({
+            const existed = await store.bankFeedAccountByProvider({
               organizationId,
               providerAccountId: body.providerAccountId,
             });
-            const account = store.upsertBankFeedAccount({
+            const account = await store.upsertBankFeedAccount({
               connectionId: connection.id,
               providerAccountId: body.providerAccountId,
               providerAccountName: body.providerAccountName || '',
@@ -274,7 +302,7 @@ function createServer({
               desktopBankAccountLocalId: body.desktopBankAccountLocalId || '',
               syncCursor: body.syncCursor || '',
             });
-            store.addAuditEvent({
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               eventType: 'bank_feed.account_mapped',
@@ -291,11 +319,11 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/sync') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
-            const { account, connection } = accountOrError(store, organizationId, body.providerAccountId);
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const { account, connection } = await accountOrError(store, organizationId, body.providerAccountId);
             consentActiveOrError(connection);
             const idempotencyKey = req.headers['idempotency-key'] || body.idempotencyKey || '';
-            const started = store.startBankFeedSyncRun({
+            const started = await store.startBankFeedSyncRun({
               organizationId,
               bankFeedAccountId: account.id,
               idempotencyKey,
@@ -324,14 +352,14 @@ function createServer({
                 account,
                 transactions,
               };
-              const syncRun = store.finishBankFeedSyncRun({
+              const syncRun = await store.finishBankFeedSyncRun({
                 syncRunId: started.syncRun.id,
                 status: 'succeeded',
                 importedCount: transactions.length,
                 skippedCount: 0,
                 result,
               });
-              store.addAuditEvent({
+              await store.addAuditEvent({
                 organizationId,
                 userId: user.id,
                 eventType: 'bank_feed.sync_succeeded',
@@ -347,12 +375,12 @@ function createServer({
               });
               return;
             } catch (err) {
-              store.finishBankFeedSyncRun({
+              await store.finishBankFeedSyncRun({
                 syncRunId: started.syncRun.id,
                 status: 'failed',
                 errorMessage: err.message,
               });
-              store.addAuditEvent({
+              await store.addAuditEvent({
                 organizationId,
                 userId: user.id,
                 eventType: 'bank_feed.sync_failed',
@@ -369,8 +397,8 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/data-deletion/request') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
-            store.addAuditEvent({
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               eventType: 'bank_feed.data_deletion_requested',
@@ -387,10 +415,10 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/manage') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
-            const connection = connectionOrError(store, organizationId);
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const connection = await connectionOrError(store, organizationId);
             const consent = await basiqClient.createConsentUrl({ userId: connection.providerUserId, action: 'manage' });
-            store.addAuditEvent({
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               eventType: 'bank_feed.consent_manage_started',
@@ -403,10 +431,10 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/reconnect') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
-            const connection = connectionOrError(store, organizationId);
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            const connection = await connectionOrError(store, organizationId);
             const consent = await basiqClient.createConsentUrl({ userId: connection.providerUserId, action: 'reconnect' });
-            store.addAuditEvent({
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               eventType: 'bank_feed.consent_reconnect_started',
@@ -419,10 +447,10 @@ function createServer({
           if (req.method === 'POST' && url.pathname === '/v1/bank-feeds/consent/revoke') {
             const body = await readJson(req);
             const organizationId = body.organizationId;
-            requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
+            await requireMembership(store, user.id, organizationId, 'bank_feeds.manage');
             await basiqClient.revokeConnection({ providerConnectionId: body.providerConnectionId || '' });
-            store.revokeBankFeedConnection({ organizationId, providerConnectionId: body.providerConnectionId || '' });
-            store.addAuditEvent({
+            await store.revokeBankFeedConnection({ organizationId, providerConnectionId: body.providerConnectionId || '' });
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               eventType: 'bank_feed.consent_revoked',
@@ -433,22 +461,22 @@ function createServer({
           }
 
           if (req.method === 'GET' && url.pathname === '/v1/audit-events') {
-            sendJson(res, 200, { events: store.listAuditEventsForUser(user.id) });
+            sendJson(res, 200, { events: await store.listAuditEventsForUser(user.id) });
             return;
           }
 
           const registerMatch = /^\/v1\/organizations\/([^/]+)\/devices\/register$/.exec(url.pathname);
           if (req.method === 'POST' && registerMatch) {
             const organizationId = decodeURIComponent(registerMatch[1]);
-            requireMembership(store, user.id, organizationId, 'devices.manage');
+            await requireMembership(store, user.id, organizationId, 'devices.manage');
             const body = await readJson(req);
-            const device = store.registerDevice({
+            const device = await store.registerDevice({
               userId: user.id,
               organizationId,
               deviceName: body.deviceName,
               publicKey: body.publicKey,
             });
-            store.addAuditEvent({
+            await store.addAuditEvent({
               organizationId,
               userId: user.id,
               deviceId: device.id,
@@ -465,9 +493,9 @@ function createServer({
           if (req.method === 'POST' && revokeMatch) {
             const organizationId = decodeURIComponent(revokeMatch[1]);
             const deviceId = decodeURIComponent(revokeMatch[2]);
-            requireMembership(store, user.id, organizationId, 'devices.manage');
+            await requireMembership(store, user.id, organizationId, 'devices.manage');
             sendJson(res, 200, {
-              device: store.revokeDevice({ userId: user.id, organizationId, deviceId }),
+              device: await store.revokeDevice({ userId: user.id, organizationId, deviceId }),
             });
             return;
           }

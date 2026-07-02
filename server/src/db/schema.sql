@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS bank_feed_sync_runs (
   imported_count integer NOT NULL DEFAULT 0,
   skipped_count integer NOT NULL DEFAULT 0,
   error_message text NOT NULL DEFAULT '',
+  idempotency_key text NOT NULL DEFAULT '',
+  result_json jsonb,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz
 );
@@ -101,6 +103,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_devices_org_user ON devices(organization_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_bank_feed_connections_org ON bank_feed_connections(organization_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_connections_provider_identity
+  ON bank_feed_connections(organization_id, provider, provider_user_id, provider_connection_id);
 CREATE INDEX IF NOT EXISTS idx_bank_feed_accounts_connection ON bank_feed_accounts(connection_id);
 CREATE INDEX IF NOT EXISTS idx_bank_feed_sync_runs_org ON bank_feed_sync_runs(organization_id, started_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_sync_runs_idempotency
+  ON bank_feed_sync_runs(organization_id, idempotency_key)
+  WHERE idempotency_key <> '';
 CREATE INDEX IF NOT EXISTS idx_audit_events_org ON audit_events(organization_id, created_at DESC);

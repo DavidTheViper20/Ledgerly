@@ -461,7 +461,12 @@ function createMemoryStore({ now = () => new Date().toISOString() } = {}) {
       .map(publicAuditEvent);
   }
 
+  function healthCheck() {
+    return { ok: true, store: 'memory' };
+  }
+
   return {
+    healthCheck,
     upsertUserFromClaims,
     listOrganizationsForUser,
     createOrganization,

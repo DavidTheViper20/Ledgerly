@@ -34,6 +34,56 @@ test('app: GET /healthz returns safe status without leaking config secrets', asy
   }
 });
 
+test('app: GET /readyz returns store readiness without leaking secrets', async () => {
+  const server = createServer({ config: testConfig() });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address();
+    const res = await fetch(`http://127.0.0.1:${port}/readyz`);
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(body, {
+      ok: true,
+      service: 'ledgerly-cloud',
+      appEnv: 'test',
+      store: 'memory',
+    });
+    assert.doesNotMatch(JSON.stringify(body), /basiq-secret-key|ledgerly:secret|DATABASE_URL|BASIQ_API_KEY/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('app: GET /readyz returns 503 when store readiness fails', async () => {
+  const store = {
+    async healthCheck() {
+      const err = new Error('postgres://ledgerly:secret@db.example.com failed');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    },
+  };
+  const logs = [];
+  const server = createServer({ config: testConfig(), store, logger: { error: (...args) => logs.push(args) } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address();
+    const res = await fetch(`http://127.0.0.1:${port}/readyz`);
+    const body = await res.json();
+
+    assert.equal(res.status, 503);
+    assert.deepEqual(body, {
+      ok: false,
+      service: 'ledgerly-cloud',
+      appEnv: 'test',
+      error: 'not_ready',
+    });
+    assert.doesNotMatch(JSON.stringify({ body, logs }), /ledgerly:secret|DATABASE_URL|BASIQ_API_KEY/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('app: unknown routes return a stable JSON error', async () => {
   const server = createServer({ config: testConfig() });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

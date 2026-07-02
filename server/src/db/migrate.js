@@ -1,16 +1,47 @@
 'use strict';
 
-const { loadConfig } = require('../config');
-const { migrationStatements } = require('./index');
+const { Pool } = require('pg');
 
-function main() {
-  const config = loadConfig();
+const { loadConfig } = require('../config');
+const { REQUIRED_TABLES, migrationStatements } = require('./index');
+
+async function runMigrations({ config = loadConfig(), pool } = {}) {
+  const ownPool = !pool;
+  const activePool = pool || new Pool({ connectionString: config.databaseUrl });
+  const client = await activePool.connect();
   const statements = migrationStatements();
 
-  console.log(`Prepared ${statements.length} Ledgerly Cloud migration statements for ${config.appEnv}.`);
-  console.log('Install a PostgreSQL driver in the deployment task before applying these statements.');
+  try {
+    await client.query('BEGIN');
+    for (const statement of statements) {
+      await client.query(statement);
+    }
+    await client.query('COMMIT');
+    return {
+      appEnv: config.appEnv,
+      statementsApplied: statements.length,
+      requiredTables: REQUIRED_TABLES,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+    if (ownPool) await activePool.end();
+  }
 }
 
-if (require.main === module) main();
+async function main() {
+  const config = loadConfig();
+  const result = await runMigrations({ config });
+  console.log(`Applied ${result.statementsApplied} Ledgerly Cloud migration statements for ${result.appEnv}.`);
+}
 
-module.exports = { main };
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { main, runMigrations };
