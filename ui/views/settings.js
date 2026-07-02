@@ -117,19 +117,25 @@ VIEWS.settingsView = async function (main) {
         </div>
 
         <div class="card">
-          <div class="doc-head">
-            <h2>Bank feeds</h2>
-            ${feedStatusBadge}
-          </div>
+          <h2>Cloud account</h2>
           <div class="mini-grid" style="margin-bottom:10px">
             <div class="mini-card"><div>Cloud account</div><b>${cloudSignedIn ? 'Signed in' : (cloudAuth.configured ? 'Ready' : 'Not configured')}</b></div>
             <div class="mini-card"><div>User</div><b>${esc(cloudIdentity)}</b></div>
             <div class="mini-card"><div>Organisation</div><b>${cloudOrgId ? esc(cloudOrgId) : 'Not linked'}</b></div>
           </div>
-          <div class="btn-row" style="margin-bottom:10px">
+          <div class="btn-row">
             <button class="btn primary" id="btn-cloud-signin" ${cloudAuth.configured && !cloudSignedIn ? '' : 'disabled'}>Sign in to Ledgerly Cloud</button>
             <button class="btn" id="btn-cloud-refresh" ${cloudSignedIn ? '' : 'disabled'}>Refresh session</button>
             <button class="btn" id="btn-cloud-signout" ${cloudSignedIn ? '' : 'disabled'}>Sign out</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="doc-head">
+            <h2>Bank feeds</h2>
+            ${feedStatusBadge}
+          </div>
+          <div class="btn-row" style="margin-bottom:10px">
             <button class="btn primary" id="btn-bank-feed-connect" ${feed.configured ? '' : 'disabled title="Connect Ledgerly Cloud first"'}>Connect bank account</button>
             <button class="btn" id="btn-bank-feed-manage" ${hasConnection ? '' : 'disabled'}>Manage consent</button>
             <button class="btn" id="btn-bank-feed-reconnect" ${hasConnection ? '' : 'disabled'}>Reconnect</button>
