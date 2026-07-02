@@ -15,25 +15,48 @@ const REQUIRED_TABLES = [
   'audit_events',
 ];
 
-function schemaPath() {
-  return path.join(__dirname, 'schema.sql');
+function migrationsDir() {
+  return path.join(__dirname, 'migrations');
 }
 
-function loadSchemaSql() {
-  return fs.readFileSync(schemaPath(), 'utf8');
+// Numbered migration files: 001_init.sql, 002_*.sql, ... Applied in filename
+// order and tracked in the schema_migrations table by the runner.
+function listMigrations() {
+  return fs.readdirSync(migrationsDir())
+    .filter(file => /^\d{3,}_.+\.sql$/.test(file))
+    .sort()
+    .map(file => {
+      const sql = fs.readFileSync(path.join(migrationsDir(), file), 'utf8');
+      return {
+        version: file.replace(/\.sql$/, ''),
+        file,
+        sql,
+        statements: splitStatements(sql),
+      };
+    });
 }
 
-function migrationStatements() {
-  return loadSchemaSql()
+function splitStatements(sql) {
+  return sql
     .split(/;\s*(?:\r?\n|$)/)
     .map(statement => statement.trim())
     .filter(Boolean)
     .map(statement => `${statement};`);
 }
 
+// Full schema as one string (all migrations concatenated in order).
+function loadSchemaSql() {
+  return listMigrations().map(m => m.sql).join('\n');
+}
+
+function migrationStatements() {
+  return listMigrations().flatMap(m => m.statements);
+}
+
 module.exports = {
   REQUIRED_TABLES,
-  schemaPath,
+  migrationsDir,
+  listMigrations,
   loadSchemaSql,
   migrationStatements,
 };
