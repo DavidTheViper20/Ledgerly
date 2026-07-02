@@ -157,6 +157,7 @@ table.lines .rm { color: var(--red); cursor: pointer; font-size: 15px; padding: 
 .badge.PAUSED, .badge.CLOSED { background: #eceef4; color: #525b72; }
 .badge.BILLED { background: #ede9fe; color: #6d28d9; }
 .badge.CANCELLED, .badge.DISPOSED { background: #fee2e2; color: #b91c1c; }
+.badge.LODGED { background: #dcfce7; color: #15803d; }
 
 .amount-pos { color: var(--green); }
 .amount-neg { color: var(--red); }

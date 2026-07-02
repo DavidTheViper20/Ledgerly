@@ -15,6 +15,7 @@ const assets = require('./services/assets');
 const projects = require('./services/projects');
 const payroll = require('./services/payroll');
 const bankFeedConnections = require('./services/bank-feed/connections');
+const tax = require('./services/tax');
 
 // ---------- contacts ----------
 const contacts = {
@@ -384,6 +385,11 @@ const METHODS = {
   'reports.budgetVsActual': (db, a) => reports.budgetVsActual(db, a),
   'budgets.get': (db, a) => reports.getBudgets(db, a),
   'budgets.set': (db, a) => reports.setBudgets(db, a),
+
+  'tax.statements': (db, a) => tax.listStatements(db, a || {}),
+  'tax.statement': (db, a) => tax.getStatement(db, a),
+  'tax.markLodged': (db, a) => tax.markLodged(db, a),
+  'tax.unlodge': (db, a) => tax.unlodge(db, a),
 };
 
 function call(db, method, args) {

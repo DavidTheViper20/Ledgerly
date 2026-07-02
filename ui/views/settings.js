@@ -112,6 +112,14 @@ VIEWS.settingsView = async function (main) {
               <label class="field">Tax label (e.g. GST)<input name="tax_label" value="${esc(s.tax_label)}" /></label>
               <label class="field">Super guarantee %<input name="super_guarantee_pct" value="${esc(s.super_guarantee_pct || '12')}" /></label>
             </div>
+            <div class="field-row">
+              <label class="field">Activity statement cycle
+                <select name="bas_cycle">
+                  <option value="quarterly" ${(s.bas_cycle || 'quarterly') === 'quarterly' ? 'selected' : ''}>Quarterly</option>
+                  <option value="monthly" ${s.bas_cycle === 'monthly' ? 'selected' : ''}>Monthly</option>
+                </select>
+              </label>
+            </div>
             <button class="btn primary" type="submit">Save invoice settings</button>
           </form>
         </div>

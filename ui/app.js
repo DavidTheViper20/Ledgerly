@@ -71,6 +71,8 @@ const ROUTES = [
   ['#/reports/account-transactions', 'reportAccountTx'],
   ['#/reports/tax', 'reportTax'],
   ['#/reports', 'reports'],
+  ['#/tax/statement', 'taxStatement'],
+  ['#/tax', 'tax'],
   ['#/settings', 'settingsView'],
 ];
 
@@ -109,6 +111,7 @@ function setActiveNav(hash) {
     hash.startsWith('#/payroll') ? 'payroll' :
     hash.startsWith('#/bank') || hash.startsWith('#/reports') || hash.startsWith('#/chart') || hash.startsWith('#/journals') ||
     hash.startsWith('#/assets') || hash.startsWith('#/budgets') ? 'accounting' :
+    hash.startsWith('#/tax') ? 'tax' :
     'dashboard';
   document.querySelectorAll('#mainnav [data-nav]').forEach(el => {
     el.classList.toggle('active', el.dataset.nav === section);

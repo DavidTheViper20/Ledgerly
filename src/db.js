@@ -496,6 +496,18 @@ CREATE TABLE IF NOT EXISTS assistant_memory (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Xero-style activity statement lodgement record. One row per BAS period
+-- marked as lodged; figures_json is a snapshot of basSummary() at lodge time.
+CREATE TABLE IF NOT EXISTS activity_statements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  lodged_at TEXT NOT NULL DEFAULT (datetime('now')),
+  figures_json TEXT NOT NULL DEFAULT '{}',
+  net_payable_cents INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(period_start, period_end)
+);
+
 CREATE INDEX IF NOT EXISTS idx_jl_journal ON journal_lines(journal_id);
 CREATE INDEX IF NOT EXISTS idx_jl_account ON journal_lines(account_id);
 CREATE INDEX IF NOT EXISTS idx_journals_date ON journals(date);
@@ -539,6 +551,7 @@ const DEFAULT_SETTINGS = {
   ai_context_length: '8192',
   tax_label: 'GST',
   super_guarantee_pct: '12',   // AU super guarantee from 1 July 2025
+  bas_cycle: 'quarterly',      // 'quarterly' | 'monthly' — activity statement frequency
 };
 
 // Idempotent column add for databases created by older versions.
@@ -602,6 +615,16 @@ function migrate(db) {
     ON bank_feed_connections(provider, provider_user_id, provider_connection_id)`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_feed_link_provider_account
     ON bank_feed_account_links(connection_id, provider_account_id)`);
+  // Activity statements (Tax tab lodgement tracking).
+  db.exec(`CREATE TABLE IF NOT EXISTS activity_statements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    lodged_at TEXT NOT NULL DEFAULT (datetime('now')),
+    figures_json TEXT NOT NULL DEFAULT '{}',
+    net_payable_cents INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(period_start, period_end)
+  )`);
   // System accounts added after first release (no-op on fresh DBs).
   const have = new Set(db.prepare('SELECT code FROM accounts').all().map(r => r.code));
   if (have.size) {
