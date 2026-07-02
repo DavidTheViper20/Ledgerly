@@ -201,7 +201,14 @@ app.whenReady().then(() => {
     openExternal: (url) => shell.openExternal(url),
     waitForCallback: waitForLoopbackCallback,
   });
+  // Legacy dev/test token path (SQLite settings or env vars). Hard-disabled
+  // in packaged/production builds — those must use the PKCE sign-in flow.
+  const legacyTokensAllowed = cloudSession.legacyTokenAllowed({
+    isPackaged: app.isPackaged,
+    env: process.env,
+  });
   function legacyCloudToken() {
+    if (!legacyTokensAllowed) return '';
     return cloudSession.getSession(db).sessionToken ||
       process.env.LEDGERLY_CLOUD_TOKEN ||
       process.env.LEDGERLY_SESSION_TOKEN ||
@@ -323,7 +330,12 @@ app.whenReady().then(() => {
 
   const CLOUD_SESSION_METHODS = {
     status: () => cloudSession.publicStatus(db),
-    save: (a) => cloudSession.saveSession(db, a),
+    save: (a) => {
+      if (!legacyTokensAllowed) {
+        throw new Error('Legacy cloud session tokens are disabled in production builds. Use Sign in instead.');
+      }
+      return cloudSession.saveSession(db, a);
+    },
     signOut: () => {
       cloudAuth.signOut();
       return cloudSession.signOut(db);

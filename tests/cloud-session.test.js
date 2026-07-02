@@ -32,6 +32,20 @@ test('cloud session: sign-out deletes local session tokens without touching org 
   assert.equal(session.publicStatus(db).organizationId, 'org_0001');
 });
 
+test('cloud session: legacy token path is rejected in production-like builds', () => {
+  // Packaged app: never allowed, regardless of env.
+  assert.equal(session.legacyTokenAllowed({ isPackaged: true, env: {} }), false);
+  assert.equal(session.legacyTokenAllowed({ isPackaged: true, env: { NODE_ENV: 'development' } }), false);
+
+  // Unpackaged but production-configured: not allowed.
+  assert.equal(session.legacyTokenAllowed({ isPackaged: false, env: { NODE_ENV: 'production' } }), false);
+  assert.equal(session.legacyTokenAllowed({ isPackaged: false, env: { APP_ENV: 'production' } }), false);
+
+  // Dev/test builds keep working.
+  assert.equal(session.legacyTokenAllowed({ isPackaged: false, env: {} }), true);
+  assert.equal(session.legacyTokenAllowed({ isPackaged: false, env: { NODE_ENV: 'test' } }), true);
+});
+
 test('local app lock: stores only salted hashes and verifies passcodes', () => {
   const configured = localLock.configure(db, { enabled: true, passcode: '123456' });
 

@@ -13,6 +13,17 @@ function deleteSetting(db, key) {
   db.prepare('DELETE FROM settings WHERE key = ?').run(key);
 }
 
+// Legacy dev-only path: plaintext session tokens in SQLite settings.
+// Production builds must sign in through the PKCE flow (services/cloud/auth.js),
+// which keeps access tokens in main-process memory and refresh tokens in
+// safeStorage. This gate decides whether the legacy path is honoured at all.
+function legacyTokenAllowed({ isPackaged = false, env = process.env } = {}) {
+  if (isPackaged) return false;
+  if (String(env.NODE_ENV || '').toLowerCase() === 'production') return false;
+  if (String(env.APP_ENV || '').toLowerCase() === 'production') return false;
+  return true;
+}
+
 function saveSession(db, { sessionToken, refreshToken = '', organizationId } = {}) {
   if (!sessionToken) throw new Error('Cloud session token is required');
   if (!organizationId) throw new Error('Cloud organization is required');
@@ -45,6 +56,7 @@ function signOut(db) {
 }
 
 module.exports = {
+  legacyTokenAllowed,
   saveSession,
   getSession,
   publicStatus,
