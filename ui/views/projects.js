@@ -3,6 +3,25 @@
 // Projects and time tracking.
 
 VIEWS.projects = async function (main, params) {
+  if ((STATE.settings.projects_enabled || '0') !== '1') {
+    main.innerHTML = `
+      <div class="page-head"><h1>Projects</h1></div>
+      <div class="card">
+        <div class="empty">Projects is turned off.</div>
+        <p class="page-sub">Turn it on to track time and profitability per job. Your project data and settings are preserved.</p>
+        <div class="btn-row"><button class="btn primary" id="btn-enable-projects">Turn on Projects</button></div>
+      </div>`;
+    document.getElementById('btn-enable-projects').addEventListener('click', async () => {
+      try {
+        await api('settings.update', { projects_enabled: '1' });
+        await loadRefData();
+        if (typeof syncNavFlags === 'function') syncNavFlags();
+        toast('Projects turned on', 'success');
+        VIEWS.projects(main, params);
+      } catch (e) { showError(e); }
+    });
+    return;
+  }
   const tab = params.tab || 'ACTIVE';
   const rows = await api('projects.list', { status: tab === 'ALL' ? null : tab });
   const contacts = await api('contacts.list', {});

@@ -1,15 +1,16 @@
 'use strict';
 
 VIEWS.contacts = async function (main, params) {
-  const filter = params.tab || 'all';
+  const filter = params.tab || params.filter || 'all';
   const search = params.q || '';
   const rows = await api('contacts.list', { filter, search });
+  const heading = filter === 'customers' ? 'Customers' : filter === 'suppliers' ? 'Suppliers' : 'Contacts';
   const tab = (id, label) =>
     `<a href="#/contacts?tab=${id}" class="${filter === id ? 'active' : ''}">${label}</a>`;
 
   main.innerHTML = `
     <div class="page-head">
-      <h1>Contacts</h1>
+      <h1>${heading}</h1>
       <div class="spacer"></div>
       <input class="search" id="contact-search" placeholder="Search contacts…" value="${esc(search)}" />
       <a class="btn primary" href="#/contacts/new">New contact</a>

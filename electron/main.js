@@ -453,6 +453,10 @@ async function runSmokeTour(outDir) {
 
   const routes = [
     ['dashboard', '#/dashboard'],
+    ['sales-overview', '#/sales'],
+    ['purchases-overview', '#/purchases'],
+    ['supplier-credits', '#/supplier-credits'],
+    ['contacts-customers', '#/contacts?filter=customers'],
     ['credit-notes', '#/credit-notes'],
     ['credit-note-view', `#/credit-notes/${creditNotes[0].id}`],
     ['purchase-orders', '#/purchase-orders'],

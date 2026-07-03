@@ -552,6 +552,7 @@ const DEFAULT_SETTINGS = {
   tax_label: 'GST',
   super_guarantee_pct: '12',   // AU super guarantee from 1 July 2025
   bas_cycle: 'quarterly',      // 'quarterly' | 'monthly' — activity statement frequency
+  projects_enabled: '0',       // '1' shows the Projects nav item + project line columns/widgets
 };
 
 // Idempotent column add for databases created by older versions.

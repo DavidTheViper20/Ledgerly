@@ -6,6 +6,8 @@
 const ROUTES = [
   ['#/dashboard', 'dashboard'],
   ['#/setup', 'setup'],
+  ['#/sales', 'salesOverview'],
+  ['#/purchases', 'purchasesOverview'],
   ['#/contacts/new', 'contactEdit'],
   ['#/contacts/:id/edit', 'contactEdit'],
   ['#/contacts/:id', 'contactDetail'],
@@ -102,20 +104,33 @@ function parseQuery() {
 }
 
 function setActiveNav(hash) {
+  const base = hash.split('?')[0];
+  // Contacts filtered by customers/suppliers highlight their owning menu.
+  const query = parseQuery();
   const section =
-    hash.startsWith('#/contacts') ? 'contacts' :
-    hash.startsWith('#/invoices') || hash.startsWith('#/quotes') || hash.startsWith('#/bills') || hash.startsWith('#/items') ||
-    hash.startsWith('#/credit-notes') || hash.startsWith('#/supplier-credits') || hash.startsWith('#/purchase-orders') ||
-    hash.startsWith('#/repeating') || hash.startsWith('#/expense-claims') ? 'business' :
-    hash.startsWith('#/projects') ? 'projects' :
-    hash.startsWith('#/payroll') ? 'payroll' :
-    hash.startsWith('#/bank') || hash.startsWith('#/reports') || hash.startsWith('#/chart') || hash.startsWith('#/journals') ||
-    hash.startsWith('#/assets') || hash.startsWith('#/budgets') ? 'accounting' :
-    hash.startsWith('#/tax') ? 'tax' :
+    base.startsWith('#/contacts') && query.filter === 'customers' ? 'sales' :
+    base.startsWith('#/contacts') && query.filter === 'suppliers' ? 'purchases' :
+    base.startsWith('#/contacts') ? 'contacts' :
+    base.startsWith('#/sales') || base.startsWith('#/invoices') || base.startsWith('#/quotes') ||
+    base.startsWith('#/items') || base.startsWith('#/credit-notes') ? 'sales' :
+    base.startsWith('#/purchases') || base.startsWith('#/bills') || base.startsWith('#/supplier-credits') ||
+    base.startsWith('#/purchase-orders') || base.startsWith('#/repeating') || base.startsWith('#/expense-claims') ? 'purchases' :
+    base.startsWith('#/projects') ? 'projects' :
+    base.startsWith('#/payroll') ? 'payroll' :
+    base.startsWith('#/reports') ? 'reporting' :
+    base.startsWith('#/bank') || base.startsWith('#/chart') || base.startsWith('#/journals') ||
+    base.startsWith('#/assets') || base.startsWith('#/budgets') ? 'accounting' :
+    base.startsWith('#/tax') ? 'tax' :
     'dashboard';
   document.querySelectorAll('#mainnav [data-nav]').forEach(el => {
     el.classList.toggle('active', el.dataset.nav === section);
   });
+}
+
+// Show/hide the Projects nav item based on the projects_enabled flag.
+function syncNavFlags() {
+  const el = document.getElementById('nav-projects');
+  if (el) el.hidden = (STATE.settings.projects_enabled || '0') !== '1';
 }
 
 let renderSeq = 0;
@@ -133,6 +148,7 @@ async function render() {
     }
     const { view, params, query } = matchRoute(hash);
     setActiveNav(hash);
+    syncNavFlags();
     const fn = window.VIEWS[view];
     if (!fn) { main.innerHTML = `<div class="card">Unknown view: ${esc(view)}</div>`; return; }
     await fn(main, { ...params, ...query });

@@ -18,30 +18,43 @@
     </div>
     <nav id="mainnav">
       <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
-      <div class="menu" data-nav="business">
-        <button class="menu-btn">Business ▾</button>
+      <div class="menu" data-nav="sales">
+        <button class="menu-btn">Sales ▾</button>
         <div class="menu-list">
+          <a href="#/sales">Sales overview</a>
           <a href="#/invoices">Invoices</a>
           <a href="#/quotes">Quotes</a>
-          <a href="#/bills">Bills to pay</a>
-          <a href="#/purchase-orders">Purchase orders</a>
-          <a href="#/repeating">Repeating invoices</a>
-          <a href="#/expense-claims">Expense claims</a>
+          <a href="#/credit-notes">Credit notes</a>
           <a href="#/items">Products &amp; services</a>
+          <a href="#/contacts?filter=customers">Customers</a>
+          <a href="#/settings?focus=sales">Sales settings</a>
+        </div>
+      </div>
+      <div class="menu" data-nav="purchases">
+        <button class="menu-btn">Purchases ▾</button>
+        <div class="menu-list">
+          <a href="#/purchases">Purchases overview</a>
+          <a href="#/bills">Bills</a>
+          <a href="#/purchase-orders">Purchase orders</a>
+          <a href="#/supplier-credits">Supplier credits</a>
+          <a href="#/repeating">Repeating bills</a>
+          <a href="#/expense-claims">Expense claims</a>
+          <a href="#/contacts?filter=suppliers">Suppliers</a>
+          <a href="#/settings?focus=purchases">Purchase settings</a>
         </div>
       </div>
       <div class="menu" data-nav="accounting">
         <button class="menu-btn">Accounting ▾</button>
         <div class="menu-list">
           <a href="#/bank">Bank accounts</a>
-          <a href="#/reports">Reports</a>
           <a href="#/chart">Chart of accounts</a>
           <a href="#/assets">Fixed assets</a>
-          <a href="#/journals">Manual journals</a>
-          <a href="#/budgets">Budget manager</a>
+          <a href="#/budgets">Budgets</a>
+          <a href="#/journals/new">Manual journals</a>
         </div>
       </div>
-      <a href="#/projects" data-nav="projects">Projects</a>
+      <a href="#/reports" data-nav="reporting">Reporting</a>
+      <a href="#/projects" data-nav="projects" id="nav-projects">Projects</a>
       <a href="#/payroll" data-nav="payroll">Payroll</a>
       <a href="#/tax" data-nav="tax">Tax</a>
       <a href="#/contacts" data-nav="contacts">Contacts</a>

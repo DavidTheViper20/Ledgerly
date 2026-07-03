@@ -32,7 +32,8 @@ VIEWS.claims = async function (main, params) {
 
 VIEWS.claimEdit = async function (main, params) {
   const isEdit = !!params.id;
-  const projects = await api('projects.list', { status: 'ACTIVE' });
+  const projectsOn = (STATE.settings.projects_enabled || '0') === '1';
+  const projects = projectsOn ? await api('projects.list', { status: 'ACTIVE' }) : [];
   let claim;
   if (isEdit) {
     const d = await api('claims.get', { id: Number(params.id) });
@@ -59,7 +60,7 @@ VIEWS.claimEdit = async function (main, params) {
       </div>
       <p class="page-sub" style="margin:0 0 10px">Enter receipt amounts <b>including GST</b>; the GST portion is claimed back automatically.</p>
       <table class="lines" id="cl-lines">
-        <thead><tr><th>Date</th><th>Merchant</th><th>Description</th><th style="text-align:right">Amount (incl GST)</th><th>Account</th><th>Tax</th><th>Project</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Merchant</th><th>Description</th><th style="text-align:right">Amount (incl GST)</th><th>Account</th><th>Tax</th>${projectsOn ? '<th>Project</th>' : ''}<th></th></tr></thead>
         <tbody></tbody>
       </table>
       <button type="button" class="btn small" id="cl-add" style="margin-top:8px">+ Add receipt</button>
@@ -80,8 +81,9 @@ VIEWS.claimEdit = async function (main, params) {
       <td class="num" style="width:130px"><input class="cl-amount" value="${l.grossCents ? dollarsOf(l.grossCents) : ''}" placeholder="0.00" /></td>
       <td style="width:190px"><select class="cl-acc">${accountOptions(l.accountId, { filter: 'nonbank' })}</select></td>
       <td style="width:160px"><select class="cl-tax">${taxOptions(l.taxRateId)}</select></td>
-      <td style="width:140px"><select class="cl-proj">${projOpts(l.projectId)}</select></td>
+      ${projectsOn ? `<td style="width:140px"><select class="cl-proj">${projOpts(l.projectId)}</select></td>` : ''}
       <td style="width:30px"><button type="button" class="rm">×</button></td>`;
+    tr._projectId = l.projectId || null;
     tbody.appendChild(tr);
     tr.querySelector('.rm').addEventListener('click', () => { tr.remove(); renderTotals(); });
     tr.querySelector('.cl-amount').addEventListener('input', renderTotals);
@@ -98,7 +100,8 @@ VIEWS.claimEdit = async function (main, params) {
       grossCents: centsOf(tr.querySelector('.cl-amount').value),
       accountId: Number(tr.querySelector('.cl-acc').value) || null,
       taxRateId: Number(tr.querySelector('.cl-tax').value) || null,
-      projectId: Number(tr.querySelector('.cl-proj').value) || null,
+      // When projects are off there is no picker; keep any existing tag from the row.
+      projectId: projectsOn ? (Number(tr.querySelector('.cl-proj').value) || null) : (tr._projectId || null),
     })).filter(l => l.description || l.merchant || l.grossCents || l.accountId);
   }
 

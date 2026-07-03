@@ -78,6 +78,69 @@ VIEWS.invoices = async function (main, params) {
   });
 };
 
+// ---------- overviews (Sales / Purchases) ----------
+
+// Shared renderer for the Sales and Purchases overview dashboards.
+async function docOverview(main, { kind, title, base, newLabel, dueLabel }) {
+  const rows = await api('invoices.list', { kind });
+  const open = rows.filter(d => d.status === 'AUTHORISED');
+  const draftTotal = rows.filter(d => d.status === 'DRAFT').reduce((s, d) => s + d.total_cents, 0);
+  const awaitingTotal = open.reduce((s, d) => s + (d.total_cents - d.paid_cents), 0);
+  const overdueTotal = open
+    .filter(d => d.due_date < today())
+    .reduce((s, d) => s + (d.total_cents - d.paid_cents), 0);
+  const recent = rows.slice(0, 10);
+
+  main.innerHTML = `
+    <div class="page-head">
+      <h1>${esc(title)}</h1>
+      <div class="spacer"></div>
+      <a class="btn primary" href="#/${base}/new">${esc(newLabel)}</a>
+    </div>
+    <div class="grid cols-3">
+      <div class="card"><div class="label">Draft</div><div class="doc-total">${fmtMoney(draftTotal)}</div></div>
+      <div class="card"><div class="label">${esc(dueLabel)}</div><div class="doc-total">${fmtMoney(awaitingTotal)}</div></div>
+      <div class="card"><div class="label">Overdue</div><div class="doc-total">${fmtMoney(overdueTotal)}</div></div>
+    </div>
+    <div class="card">
+      <h2>Recent ${esc(base)}</h2>
+      <table class="data">
+        <thead><tr>
+          <th>Number</th><th>${kind === 'ACCPAY' ? 'From' : 'To'}</th><th>Date</th><th>Due date</th>
+          <th>Status</th><th class="num">Total</th><th class="num">Due</th>
+        </tr></thead>
+        <tbody>
+          ${recent.length === 0 ? `<tr><td colspan="7"><div class="empty">Nothing here yet</div></td></tr>` : ''}
+          ${recent.map(d => `
+            <tr class="click" data-go="#/${base}/${d.id}">
+              <td><b>${esc(d.number || '—')}</b></td>
+              <td>${esc(d.contact_name)}</td>
+              <td>${fmtDate(d.issue_date)}</td>
+              <td>${fmtDate(d.due_date)}</td>
+              <td>${badge(d.status === 'AUTHORISED' && d.due_date < today() ? 'OVERDUE' : d.status)}</td>
+              <td class="num">${fmtDocMoney(d.total_cents, d.currency)}</td>
+              <td class="num">${d.status === 'AUTHORISED' || d.status === 'PAID' ? fmtDocMoney(d.total_cents - d.paid_cents, d.currency) : ''}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="margin-top:12px"><a class="btn" href="#/${base}">View all ${esc(base)}</a></div>
+    </div>`;
+}
+
+VIEWS.salesOverview = async function (main) {
+  await docOverview(main, {
+    kind: 'ACCREC', title: 'Sales overview', base: 'invoices',
+    newLabel: 'New invoice', dueLabel: 'Awaiting payment',
+  });
+};
+
+VIEWS.purchasesOverview = async function (main) {
+  await docOverview(main, {
+    kind: 'ACCPAY', title: 'Purchases overview', base: 'bills',
+    newLabel: 'New bill', dueLabel: 'Bills to pay',
+  });
+};
+
 // ---------- shared line-item editor ----------
 
 // Renders the editable lines table into a container and returns helpers.

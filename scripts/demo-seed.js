@@ -14,7 +14,7 @@ function seedDemo(db) {
   call('settings.update', {
     org_name: 'Demo Trading Co', org_email: 'accounts@demo.example',
     org_address: '12 Collins Street, Melbourne VIC 3000', org_tax_number: '51 824 753 556',
-    base_currency: 'AUD', setup_complete: '1',
+    base_currency: 'AUD', setup_complete: '1', projects_enabled: '1',
   });
 
   const acme = call('contacts.save', { name: 'Acme Industries', email: 'ap@acme.example', phone: '555-0101', is_customer: true });
