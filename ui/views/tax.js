@@ -28,15 +28,35 @@ function periodLabel(periodStart, periodEnd) {
   return `Q${qNum} FY${String(fyYear).slice(-2)} · ${fmtDate(periodStart)} – ${fmtDate(periodEnd)}`;
 }
 
+// IAS rows are labelled "IAS <Month Year>" (they're always a single month);
+// BAS rows keep the quarter/month/annual labelling from periodLabel().
+function statementLabel(s) {
+  if (s.type === 'IAS') {
+    const d = new Date(s.periodStart + 'T00:00:00');
+    return `IAS ${d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`;
+  }
+  return periodLabel(s.periodStart, s.periodEnd);
+}
+
+// Small type badge distinguishing BAS from IAS in the inbox.
+function typeBadge(type) {
+  const t = type === 'IAS' ? 'IAS' : 'BAS';
+  const bg = t === 'IAS' ? '#eef2ff' : '#ecfeff';
+  const fg = t === 'IAS' ? '#4338ca' : '#0e7490';
+  return `<span style="display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;
+    padding:1px 6px;border-radius:5px;background:${bg};color:${fg};margin-right:6px">${t}</span>`;
+}
+
 function statementRow(s, { isCompleted }) {
-  const label = periodLabel(s.periodStart, s.periodEnd);
+  const label = statementLabel(s);
   const amountLabel = s.netPayableCents >= 0 ? 'Payable' : 'Refund';
   const amountCls = s.netPayableCents >= 0 ? '' : 'amount-pos';
-  const viewHref = `#/tax/statement?from=${s.periodStart}&to=${s.periodEnd}`;
+  const typeParam = s.type === 'IAS' ? '&type=IAS' : '';
+  const viewHref = `#/tax/statement?from=${s.periodStart}&to=${s.periodEnd}${typeParam}`;
   return `
     <div class="bank-card" data-period-start="${s.periodStart}" data-period-end="${s.periodEnd}" ${s.id ? `data-id="${s.id}"` : ''}>
       <div>
-        <a href="${viewHref}"><b>${esc(label)}</b></a>
+        <a href="${viewHref}">${typeBadge(s.type)}<b>${esc(label)}</b></a>
         <div class="sub" style="font-size:12px;color:var(--ink-soft)">
           ${isCompleted
             ? `Lodged ${fmtDate((s.lodgedAt || '').slice(0, 10))}`
@@ -51,7 +71,7 @@ function statementRow(s, { isCompleted }) {
         <a class="btn small" href="${viewHref}">View</a>
         ${isCompleted
           ? `<button class="btn small danger btn-tax-unlodge" data-id="${s.id}">Unlodge</button>`
-          : `<button class="btn small primary btn-tax-lodge" data-from="${s.periodStart}" data-to="${s.periodEnd}">Mark as lodged</button>`}
+          : `<button class="btn small primary btn-tax-lodge" data-from="${s.periodStart}" data-to="${s.periodEnd}" data-type="${s.type || 'BAS'}">Mark as lodged</button>`}
       </div>
     </div>`;
 }
@@ -79,7 +99,7 @@ async function renderActivityStatements(main) {
   const basisSub = isCash
     ? 'Figures are cash-basis, derived from payments (GST is reported in the period you receive or make payment).'
     : 'Figures are accruals-basis, derived from your posted journals (Simpler BAS labels).';
-  const currentLabel = r.current ? periodLabel(r.current.periodStart, r.current.periodEnd) : '';
+  const currentLabel = r.current ? statementLabel(r.current) : '';
 
   main.innerHTML = `
     <div class="page-head"><h1>Tax</h1></div>
@@ -93,7 +113,7 @@ async function renderActivityStatements(main) {
       <h2>In progress</h2>
       <div class="bank-card" data-period-start="${r.current.periodStart}" data-period-end="${r.current.periodEnd}">
         <div>
-          <b>${esc(currentLabel)}</b>
+          ${typeBadge(r.current.type)}<b>${esc(currentLabel)}</b>
           <div class="sub" style="font-size:12px;color:var(--ink-soft)">Due ${fmtDate(r.current.dueDate)}</div>
         </div>
         <div style="text-align:right">
@@ -101,7 +121,7 @@ async function renderActivityStatements(main) {
           <div style="font-size:12px;color:var(--ink-soft)">${r.current.netPayableCents >= 0 ? 'Payable so far' : 'Refund so far'}</div>
         </div>
         <div class="btn-row" style="margin-left:14px">
-          <a class="btn small" href="#/tax/statement?from=${r.current.periodStart}&to=${r.current.periodEnd}">View</a>
+          <a class="btn small" href="#/tax/statement?from=${r.current.periodStart}&to=${r.current.periodEnd}${r.current.type === 'IAS' ? '&type=IAS' : ''}">View</a>
         </div>
       </div>
     </div>` : ''}
@@ -121,9 +141,9 @@ async function renderActivityStatements(main) {
     </div>`;
 
   on(main, '.btn-tax-lodge', 'click', async (ev) => {
-    const { from, to } = ev.currentTarget.dataset;
+    const { from, to, type } = ev.currentTarget.dataset;
     try {
-      await api('tax.markLodged', { from, to });
+      await api('tax.markLodged', { from, to, type });
       toast('Activity statement marked as lodged', 'success');
       renderActivityStatements(main);
     } catch (e) { showError(e); }
@@ -268,8 +288,9 @@ async function renderTaxSettings(main) {
             <option value="monthly" ${whPeriod === 'monthly' ? 'selected' : ''}>Monthly</option>
           </select>
           <div style="font-size:12px;color:var(--ink-soft);margin-top:3px;font-weight:400">
-            Controls whether W1/W2 labels appear on activity statements. Monthly currently reports on the
-            same schedule as quarterly — interleaved monthly IAS statements are coming in a future update.
+            Controls whether W1/W2 labels appear on activity statements. Monthly withholding with a
+            quarterly or annual GST period generates a separate monthly IAS (PAYG withholding only) in
+            the statement inbox for the months that don't coincide with a BAS.
           </div>
         </label>
         <button class="btn primary" type="submit">Save PAYG withholding</button>
@@ -404,9 +425,13 @@ async function renderTaxSettings(main) {
 VIEWS.taxStatement = async function (main, params) {
   const from = params.from;
   const to = params.to;
+  const type = params.type === 'IAS' ? 'IAS' : 'BAS';
   if (!from || !to) { navigate('#/tax'); return; }
-  const r = await api('tax.statement', { from, to });
-  const label = periodLabel(from, to);
+  const r = await api('tax.statement', { from, to, type });
+  const isIas = r.type === 'IAS';
+  const label = isIas
+    ? `IAS ${new Date(from + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`
+    : periodLabel(from, to);
   const isLodged = r.status === 'LODGED';
   const isInProgress = to >= today();
   const amountLabel = r.netPayableCents >= 0 ? 'Net amount payable to the ATO' : 'Net amount refundable';
@@ -427,7 +452,9 @@ VIEWS.taxStatement = async function (main, params) {
     <tr class="subtotal"><td>Net GST ${r.net_gst_cents >= 0 ? 'payable' : 'refundable'}</td>
       <td class="num">${fmtMoney(Math.abs(r.net_gst_cents))}</td></tr>`;
 
-  const whRows = showW ? `
+  // On an IAS the withholding section always shows (it's the whole point of the
+  // statement); on a BAS it respects the showWLabels visibility flag.
+  const whRows = (isIas || showW) ? `
     <tr><td><b>W1</b> Total salary and wages</td><td class="num">${fmtMoney(r.w1_gross_wages_cents)}</td></tr>
     <tr><td><b>W2</b> PAYG withheld</td><td class="num">${fmtMoney(r.w2_payg_withheld_cents)}</td></tr>` : '';
 
@@ -475,22 +502,28 @@ VIEWS.taxStatement = async function (main, params) {
       </div>` : ''}
 
     <div class="card" style="max-width:680px;margin:0 auto">
-      ${reportHeader('Activity Statement', `For the period ${fmtDate(from)} to ${fmtDate(to)} · ${formLabel} · ${basisLabel}`)}
+      ${isIas
+        ? reportHeader('Instalment Activity Statement', `For the period ${fmtDate(from)} to ${fmtDate(to)} · PAYG withholding`)
+        : reportHeader('Activity Statement', `For the period ${fmtDate(from)} to ${fmtDate(to)} · ${formLabel} · ${basisLabel}`)}
 
+      ${isIas ? '' : `
       <h3 style="margin-bottom:6px">Goods and services tax (GST)</h3>
-      <table class="data"><tbody>${gstRows}</tbody></table>
+      <table class="data"><tbody>${gstRows}</tbody></table>`}
 
       ${whRows ? `
       <h3 style="margin:16px 0 6px">PAYG withholding</h3>
-      <table class="data"><tbody>${whRows}</tbody></table>` : ''}
+      <table class="data"><tbody>${whRows}</tbody></table>
+      ${isIas ? `<p style="color:var(--ink-soft);font-size:12px;margin:6px 0 0">
+        PAYG withholding figures are payment-dated (from your pay runs), so they're the same on a cash or accruals basis.
+      </p>` : ''}` : ''}
 
-      ${itRows ? `
+      ${isIas || !itRows ? '' : `
       <h3 style="margin:16px 0 6px">PAYG income tax</h3>
-      <table class="data"><tbody>${itRows}</tbody></table>` : ''}
+      <table class="data"><tbody>${itRows}</tbody></table>`}
 
-      ${obligationRows ? `
+      ${isIas || !obligationRows ? '' : `
       <h3 style="margin:16px 0 6px">Other obligations</h3>
-      <table class="data"><tbody>${obligationRows}</tbody></table>` : ''}
+      <table class="data"><tbody>${obligationRows}</tbody></table>`}
 
       <table class="data" style="margin-top:16px">
         <tbody>
@@ -519,7 +552,7 @@ VIEWS.taxStatement = async function (main, params) {
   });
   document.getElementById('btn-mark-lodged')?.addEventListener('click', async () => {
     try {
-      await api('tax.markLodged', { from, to });
+      await api('tax.markLodged', { from, to, type });
       toast('Activity statement marked as lodged', 'success');
       navigate('#/tax');
     } catch (e) { showError(e); }

@@ -7,15 +7,17 @@
 // on the extra Full BAS / PAYG / obligation labels on top of basSummary().
 //
 // Pass D1 scope: settings model + statement label rendering.
-//   - Pass D2 (this pass) adds the cash-basis GST engine — gst_method 'cash'
-//     now selects cashBasSummary() (payment-dated GST) in place of basSummary()
-//     for all statement figures, via basEngine() below.
-//   - Pass D3 (not built here) is PAYG instalment / monthly IAS statement
-//     generation — payg_wh_period 'monthly' currently behaves exactly like
-//     'quarterly' for statement labels (see cycleSetting() below).
+//   - Pass D2 adds the cash-basis GST engine — gst_method 'cash' selects
+//     cashBasSummary() (payment-dated GST) in place of basSummary() for all
+//     statement figures, via basEngine() below.
+//   - Pass D3 (this pass) adds monthly IAS statement generation: a monthly PAYG
+//     withholder whose GST is reported quarterly/annually now gets a standalone
+//     IAS (PAYG withholding only) for the months that don't coincide with a BAS
+//     (see iasSplit()/statementDescriptors() below). Statements carry a `type`
+//     of 'BAS' or 'IAS'.
 
 const { getSetting } = require('../db');
-const { basSummary, cashBasSummary, fyStart } = require('./reports');
+const { basSummary, cashBasSummary, paygWithholding, fyStart } = require('./reports');
 
 // D1/D2 engine seam: select the BAS figures engine by the gst_method setting.
 // 'cash' -> cashBasSummary (GST recognised on payment date); anything else ->
@@ -87,8 +89,10 @@ function buildPeriods(db, { seriesStart, today, cycle }) {
 // Due date: monthly = 21 days after period end; quarterly = 28 days after,
 // except the Oct-Dec quarter (Q2 of the AU FY) which is due 28 February;
 // annually = ATO's standard 2-months-plus after period end (approximate —
-// annual GST reporting due dates vary by lodgement pathway; treat as a
-// placeholder until Pass D3 wires up real IAS/annual lodgement scheduling).
+// annual GST reporting due dates vary by lodgement pathway).
+//
+// Pass D3: a monthly IAS is always due 21 days after month end, regardless of
+// the GST cycle, so it uses the 'monthly' branch here (see iasDueDate()).
 function dueDateFor(periodEnd, cycle) {
   const end = new Date(periodEnd + 'T00:00:00Z');
   if (cycle === 'monthly') {
@@ -105,6 +109,71 @@ function dueDateFor(periodEnd, cycle) {
   }
   const d = new Date(end.getTime() + 28 * 864e5);
   return ymd(d);
+}
+
+// ---------- Pass D3: monthly IAS interleaving ----------
+// A monthly PAYG withholder reports withholding every month. When GST is
+// reported LESS often than monthly (quarterly or annually), the intervening
+// months can't ride on a BAS, so each gets its own IAS (Instalment Activity
+// Statement) carrying PAYG-withholding labels only (W1/W2 — no GST, no PAYG
+// income-tax instalments). The withholding that DOES coincide with a BAS
+// period end is reported on that BAS instead of on a separate IAS.
+//
+// iasSplit() returns which BAS months become standalone IAS statements:
+//   - 'quarterly': the FIRST TWO months of each GST quarter become IAS; the
+//     quarter's BAS reports withholding for the THIRD month only.
+//   - 'annually':  EVERY month becomes an IAS; the annual GST statement carries
+//     NO withholding at all (all of it was reported via the monthly IAS).
+//   - otherwise (monthly GST, or WH quarterly/none): no IAS — behaviour today.
+function iasSplit(db) {
+  const wPeriod = getSetting(db, 'payg_wh_period') || 'quarterly';
+  if (wPeriod !== 'monthly') return null;
+  const gstPeriod = gstPeriodSetting(db);
+  if (gstPeriod === 'quarterly') return 'quarterly';
+  if (gstPeriod === 'annually') return 'annually';
+  return null; // monthly GST already carries each month's W labels on its BAS.
+}
+
+// The calendar month periods (inclusive ISO ranges) that fall inside a BAS
+// period [periodStart, periodEnd]. Used to slice a quarter/year into months.
+function monthsIn(periodStart, periodEnd) {
+  const out = [];
+  let cursor = new Date(periodStart + 'T00:00:00Z');
+  const end = new Date(periodEnd + 'T00:00:00Z');
+  while (cursor <= end) {
+    const mStart = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), 1));
+    const mEnd = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0));
+    out.push({ periodStart: ymd(mStart), periodEnd: ymd(mEnd) });
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1));
+  }
+  return out;
+}
+
+// IAS due date: always 21 days after the month end (uses dueDateFor's monthly
+// branch), independent of the GST cycle.
+function iasDueDate(periodEnd) {
+  return dueDateFor(periodEnd, 'monthly');
+}
+
+// For a BAS period under a given split, the month sub-ranges that become
+// standalone IAS statements (empty when there's no split).
+function iasMonthsForBasPeriod(split, periodStart, periodEnd) {
+  if (!split) return [];
+  const months = monthsIn(periodStart, periodEnd);
+  if (split === 'quarterly') return months.slice(0, 2);  // first two months -> IAS
+  return months;                                          // annually: every month -> IAS
+}
+
+// The sub-range of a BAS period over which its OWN W1/W2 should be computed.
+//   - 'quarterly' split: the THIRD month only.
+//   - 'annually' split: none (W labels dropped entirely) -> null.
+//   - no split: the whole period (unchanged).
+function basWRange(split, periodStart, periodEnd) {
+  if (!split) return { from: periodStart, to: periodEnd };
+  if (split === 'annually') return null;
+  const months = monthsIn(periodStart, periodEnd);
+  const third = months[months.length - 1]; // last month of the quarter
+  return { from: third.periodStart, to: third.periodEnd };
 }
 
 function earliestJournalDate(db) {
@@ -240,38 +309,133 @@ function netPayableFromBas(bas, extras) {
   return net;
 }
 
+// ---------- Statement figure assembly (D3: BAS vs IAS) ----------
+
+// Full BAS figure object for a period. When a monthly-WH IAS split is active,
+// the BAS's own W1/W2 are recomputed over the split's sub-range: the third
+// month only (quarterly split), or dropped entirely (annual split). GST and
+// everything else still cover the whole `[from,to]` period.
+//
+// `asOf` limits the accrual window (used for the in-progress "current" period,
+// where figures cover from the period start up to today).
+function buildBasFigures(db, { from, to, asOf }) {
+  const cycle = cycleSetting(db);
+  const rangeTo = asOf || to;
+  const bas = basEngine(db, { from, to: rangeTo });
+
+  const split = iasSplit(db);
+  const wRange = basWRange(split, from, to);
+  if (split) {
+    // Recompute W1/W2 over the BAS's own sub-range (month 3, or none).
+    if (wRange) {
+      const wTo = asOf && asOf < wRange.to ? asOf : wRange.to;
+      const wFrom = wRange.from;
+      // Only report W if the (possibly clipped) sub-range is valid.
+      const { w1, w2 } = wFrom <= wTo ? paygWithholding(db, { from: wFrom, to: wTo }) : { w1: 0, w2: 0 };
+      bas.w1_gross_wages_cents = w1;
+      bas.w2_payg_withheld_cents = w2;
+    } else {
+      // Annual split: withholding reported entirely via monthly IAS.
+      bas.w1_gross_wages_cents = 0;
+      bas.w2_payg_withheld_cents = 0;
+    }
+  }
+
+  const extras = buildExtras(db, bas, { from, to: rangeTo });
+  // Annual split drops W labels from the annual statement.
+  if (split === 'annually') extras.showWLabels = false;
+
+  return {
+    ...bas,
+    ...extras,
+    type: 'BAS',
+    basis: bas.basis === 'cash' ? 'cash' : 'accruals',
+    dueDate: dueDateFor(to, cycle),
+    netPayableCents: netPayableFromBas(bas, extras),
+  };
+}
+
+// IAS figure object: PAYG withholding labels + net only. No GST/G labels, no
+// PAYG income-tax instalments, no Full-BAS extras, no obligations. Net = W2.
+function buildIasFigures(db, { from, to, asOf }) {
+  const wTo = asOf && asOf < to ? asOf : to;
+  const { w1, w2 } = paygWithholding(db, { from, to: wTo });
+  return {
+    from, to,
+    type: 'IAS',
+    w1_gross_wages_cents: w1,
+    w2_payg_withheld_cents: w2,
+    showWLabels: true,
+    dueDate: iasDueDate(to),
+    netPayableCents: w2,
+  };
+}
+
+// Ordered list of statement descriptors {type, periodStart, periodEnd, dueDate}
+// covering the series, interleaving monthly IAS statements where the WH/GST
+// settings require them. Order is chronological by (periodEnd, then IAS before
+// BAS when they share a period end — which only happens for the third month of
+// a quarter, and there we emit no IAS anyway).
+function statementDescriptors(db, { seriesStart, today }) {
+  const cycle = cycleSetting(db);
+  const split = iasSplit(db);
+  const basPeriods = buildPeriods(db, { seriesStart, today, cycle });
+  const out = [];
+  for (const { periodStart, periodEnd } of basPeriods) {
+    // Interleave the IAS months for this BAS period, ahead of the BAS itself.
+    for (const m of iasMonthsForBasPeriod(split, periodStart, periodEnd)) {
+      out.push({ type: 'IAS', periodStart: m.periodStart, periodEnd: m.periodEnd, dueDate: iasDueDate(m.periodEnd) });
+    }
+    out.push({ type: 'BAS', periodStart, periodEnd, dueDate: dueDateFor(periodEnd, cycle) });
+  }
+  // Chronological by period end, IAS before its parent BAS on ties.
+  out.sort((a, b) => {
+    if (a.periodEnd !== b.periodEnd) return a.periodEnd < b.periodEnd ? -1 : 1;
+    return a.type === 'IAS' ? -1 : 1;
+  });
+  return out;
+}
+
+function figuresFor(db, d, asOf) {
+  return d.type === 'IAS'
+    ? buildIasFigures(db, { from: d.periodStart, to: d.periodEnd, asOf })
+    : buildBasFigures(db, { from: d.periodStart, to: d.periodEnd, asOf });
+}
+
 function listStatements(db, { today: todayArg } = {}) {
   const today = todayArg || new Date().toISOString().slice(0, 10);
-  const cycle = cycleSetting(db);
   const earliest = earliestJournalDate(db);
   const seriesStart = earliest || fyStart(db, today);
 
-  const periods = buildPeriods(db, { seriesStart, today, cycle });
+  const descriptors = statementDescriptors(db, { seriesStart, today });
 
   const needsAttention = [];
   const completed = [];
   let current = null;
 
-  for (const { periodStart, periodEnd } of periods) {
-    // The period containing today is always "in progress", never an activity
-    // statement yet — it has no due date obligation until it ends.
+  for (const d of descriptors) {
+    const { type, periodStart, periodEnd, dueDate } = d;
+    // The period containing today is always "in progress", never a lodged
+    // statement yet. The current (in-progress) item is the SHORTEST such
+    // period covering today — i.e. the in-progress IAS month when one exists,
+    // otherwise the in-progress BAS. Its parent BAS quarter keeps accumulating
+    // and only appears once its own period ends.
     if (periodEnd >= today) {
-      if (!current || periodStart > current.periodStart) {
-        const dueDate = dueDateFor(periodEnd, cycle);
-        const bas = basEngine(db, { from: periodStart, to: today });
-        const extras = buildExtras(db, bas, { from: periodStart, to: today });
-        current = {
-          periodStart, periodEnd, dueDate,
-          netPayableCents: netPayableFromBas(bas, extras),
-        };
+      const isShorter = !current
+        || periodStart > current.periodStart
+        || (periodStart === current.periodStart && periodEnd < current.periodEnd);
+      if (isShorter) {
+        const fig = figuresFor(db, d, today);
+        current = { type, periodStart, periodEnd, dueDate, netPayableCents: fig.netPayableCents };
       }
       continue;
     }
-    const dueDate = dueDateFor(periodEnd, cycle);
     const lodged = lodgementFor(db, periodStart, periodEnd);
     if (lodged) {
+      const snapshotType = safeFiguresType(lodged) || type;
       completed.push({
         id: lodged.id,
+        type: snapshotType,
         periodStart, periodEnd, dueDate,
         status: 'LODGED',
         overdue: false,
@@ -279,22 +443,21 @@ function listStatements(db, { today: todayArg } = {}) {
         lodgedAt: lodged.lodged_at,
       });
     } else {
-      const bas = basEngine(db, { from: periodStart, to: periodEnd });
-      const extras = buildExtras(db, bas, { from: periodStart, to: periodEnd });
+      const fig = figuresFor(db, d);
       needsAttention.push({
+        type,
         periodStart, periodEnd, dueDate,
         status: 'DRAFT',
         overdue: dueDate < today,
-        netPayableCents: netPayableFromBas(bas, extras),
+        netPayableCents: fig.netPayableCents,
       });
     }
   }
 
-  // There is always a current period, even with zero journals: buildPeriods
-  // stops at the period containing `today`, so the loop above should have
-  // set it. As a defensive fallback (e.g. seriesStart computed oddly),
-  // derive it directly from the FY start.
+  // There is always a current period. buildPeriods stops at the period
+  // containing `today`, so the loop should have set it. Defensive fallback.
   if (!current) {
+    const cycle = cycleSetting(db);
     const fyStartD = fyStart(db, today);
     const stepMonths = cycle === 'monthly' ? 1 : cycle === 'annually' ? 12 : 3;
     const start = new Date(fyStartD + 'T00:00:00Z');
@@ -308,10 +471,8 @@ function listStatements(db, { today: todayArg } = {}) {
     const next = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + stepMonths, cursor.getUTCDate()));
     const periodStart = ymd(cursor);
     const periodEnd = ymd(new Date(next.getTime() - 864e5));
-    const dueDate = dueDateFor(periodEnd, cycle);
-    const bas = basEngine(db, { from: periodStart, to: today });
-    const extras = buildExtras(db, bas, { from: periodStart, to: today });
-    current = { periodStart, periodEnd, dueDate, netPayableCents: netPayableFromBas(bas, extras) };
+    const fig = buildBasFigures(db, { from: periodStart, to: periodEnd, asOf: today });
+    current = { type: 'BAS', periodStart, periodEnd, dueDate: fig.dueDate, netPayableCents: fig.netPayableCents };
   }
 
   // Needs attention: soonest due first. Completed: most recently lodged first.
@@ -321,32 +482,32 @@ function listStatements(db, { today: todayArg } = {}) {
   return { needsAttention, completed, current };
 }
 
-function getStatement(db, { from, to }) {
-  const cycle = cycleSetting(db);
-  const bas = basEngine(db, { from, to });
-  const extras = buildExtras(db, bas, { from, to });
-  const dueDate = dueDateFor(to, cycle);
+function safeFiguresType(row) {
+  try { return JSON.parse(row.figures_json).type; } catch { return null; }
+}
+
+function getStatement(db, { from, to, type }) {
+  const isIas = type === 'IAS';
   const lodged = lodgementFor(db, from, to);
+  const fig = isIas
+    ? buildIasFigures(db, { from, to })
+    : buildBasFigures(db, { from, to });
   return {
-    ...bas,
-    ...extras,
-    // basSummary() leaves basis undefined; cashBasSummary() sets it to 'cash'.
-    // Normalise so the UI subtitle can always read a definite value.
-    basis: bas.basis === 'cash' ? 'cash' : 'accruals',
-    dueDate,
-    netPayableCents: lodged ? lodged.net_payable_cents : netPayableFromBas(bas, extras),
+    ...fig,
+    netPayableCents: lodged ? lodged.net_payable_cents : fig.netPayableCents,
     status: lodged ? 'LODGED' : 'DRAFT',
     lodgement: lodged || null,
   };
 }
 
-function markLodged(db, { from, to }) {
+function markLodged(db, { from, to, type }) {
   const existing = lodgementFor(db, from, to);
   if (existing) throw new Error('This period has already been lodged');
-  const bas = basEngine(db, { from, to });
-  const extras = buildExtras(db, bas, { from, to });
-  const netPayableCents = netPayableFromBas(bas, extras);
-  const figures = { ...bas, ...extras };
+  const isIas = type === 'IAS';
+  const figures = isIas
+    ? buildIasFigures(db, { from, to })
+    : buildBasFigures(db, { from, to });
+  const netPayableCents = figures.netPayableCents;
   const r = db.prepare(`INSERT INTO activity_statements
     (period_start, period_end, lodged_at, figures_json, net_payable_cents)
     VALUES (?, ?, datetime('now'), ?, ?)`)

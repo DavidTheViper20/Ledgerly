@@ -442,5 +442,5 @@ function budgetVsActual(db, { from, to }) {
 
 module.exports = {
   profitAndLoss, balanceSheet, trialBalance, agedDocuments, accountTransactions, taxSummary,
-  cashSummary, fyStart, basSummary, cashBasSummary, cashFlowForecast, setBudgets, getBudgets, budgetVsActual,
+  cashSummary, fyStart, basSummary, cashBasSummary, paygWithholding, cashFlowForecast, setBudgets, getBudgets, budgetVsActual,
 };
