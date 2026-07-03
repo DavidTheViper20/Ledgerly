@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { filterReports, toggleFavourite, parseFavourites } = require('../src/services/report-library');
+const { filterReports, toggleFavourite, parseFavourites } = require('../ui/shared');
 const { DEFAULT_SETTINGS } = require('../src/db');
 
 const REPORTS = [

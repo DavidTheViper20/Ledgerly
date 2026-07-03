@@ -14,27 +14,8 @@ function nextBankAccountCode(banks) {
   return String(Date.now()).slice(-4);
 }
 
-// UI-side mirror of src/services/bank-feed/connections.js#annotateProviderAccounts.
-// The renderer runs with contextIsolation (no Node `require`), so this pure logic is
-// duplicated here; the canonical, unit-tested implementation lives in the service
-// module alongside the main-process bank feed flow.
-function annotateProviderAccounts(providerAccounts = [], accountLinks = []) {
-  const mappedByProviderId = new Map(
-    accountLinks.map(l => [String(l.provider_account_id ?? l.providerAccountId ?? ''), l]),
-  );
-  return providerAccounts.map((account) => {
-    const providerAccountId = String(account.providerAccountId ?? account.provider_account_id ?? '');
-    const link = mappedByProviderId.get(providerAccountId);
-    const alreadyMapped = Boolean(link);
-    return {
-      ...account,
-      alreadyMapped,
-      mappedBankAccountName: link ? (link.bank_account_name || '') : '',
-      selectable: !alreadyMapped,
-      preChecked: !alreadyMapped,
-    };
-  });
-}
+// Shared with tests/main process via ui/shared.js (single implementation).
+const { annotateProviderAccounts } = LedgerlyShared;
 
 VIEWS.bankAccounts = async function (main) {
   const banks = await api('bank.accounts');

@@ -44,42 +44,8 @@ function reportHeader(title, sub) {
 }
 
 // ---------- Report library (#/reports) ----------
-// UI-side mirror of src/services/report-library.js#filterReports / #toggleFavourite.
-// The renderer runs with contextIsolation (no Node `require`), so this pure logic
-// is duplicated here; the canonical, unit-tested implementation lives in the
-// service module (see tests/report-library.test.js), exactly like
-// annotateProviderAccounts is mirrored in ui/views/bank.js.
-function filterReports(reports, query) {
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return reports.slice();
-  return reports.filter((r) => {
-    const name = String(r.name || '').toLowerCase();
-    const desc = String(r.description || '').toLowerCase();
-    return name.includes(q) || desc.includes(q);
-  });
-}
-
-function toggleFavourite(favouritesJson, route) {
-  let list;
-  try {
-    const parsed = JSON.parse(favouritesJson || '[]');
-    list = Array.isArray(parsed) ? parsed : [];
-  } catch {
-    list = [];
-  }
-  const idx = list.indexOf(route);
-  const next = idx === -1 ? [...list, route] : list.filter((r) => r !== route);
-  return JSON.stringify(next);
-}
-
-function parseFavourites(favouritesJson) {
-  try {
-    const parsed = JSON.parse(favouritesJson || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
+// Shared with tests via ui/shared.js (single implementation).
+const { filterReports, toggleFavourite, parseFavourites } = LedgerlyShared;
 
 const REPORT_CATEGORIES = [
   {
