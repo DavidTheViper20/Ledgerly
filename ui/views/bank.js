@@ -107,7 +107,7 @@ VIEWS.bankAccounts = async function (main) {
           Bank feeds connect through Ledgerly Cloud. Set up your cloud account first.
         </p>
         <div class="btn-row">
-          <a class="btn primary" href="#/settings" id="feed-go-settings">Go to Settings</a>
+          <a class="btn primary" href="#/settings?pane=cloud" id="feed-go-settings">Go to Settings</a>
           <button class="btn" type="button" id="feed-add-manual">Add manually (no bank feed)</button>
           <button class="btn" type="button" id="feed-close">Cancel</button>
         </div>`);

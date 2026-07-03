@@ -59,5 +59,29 @@
     return JSON.stringify(next);
   }
 
-  return { annotateProviderAccounts, filterReports, toggleFavourite, parseFavourites };
+  // Settings home/pane routing. #/settings (no params) is the grouped home;
+  // #/settings?pane=<id> opens a focused pane directly; legacy #/settings?focus=<id>
+  // links (assistant bubble, nav dropdowns) map onto the same panes so old
+  // bookmarks/smoke routes keep working. Returns '' for the home (no pane).
+  const SETTINGS_PANE_IDS = [
+    'organisation', 'sales', 'purchases', 'taxes',
+    'bank-feeds', 'cloud', 'security', 'assistant', 'advanced',
+  ];
+  const SETTINGS_FOCUS_ALIASES = {
+    ai: 'assistant',
+    sales: 'sales',
+    purchases: 'purchases',
+  };
+  function paneForQuery(query = {}) {
+    const pane = String(query.pane || '').trim();
+    if (pane && SETTINGS_PANE_IDS.includes(pane)) return pane;
+    const focus = String(query.focus || '').trim();
+    if (focus && SETTINGS_FOCUS_ALIASES[focus]) return SETTINGS_FOCUS_ALIASES[focus];
+    return '';
+  }
+
+  return {
+    annotateProviderAccounts, filterReports, toggleFavourite, parseFavourites,
+    paneForQuery, SETTINGS_PANE_IDS,
+  };
 });

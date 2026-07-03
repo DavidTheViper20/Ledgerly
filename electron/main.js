@@ -499,7 +499,9 @@ async function runSmokeTour(outDir) {
     ['tax', '#/tax'],
     ['tax-tpar', '#/tax?tab=tpar'],
     ['tax-settings', '#/tax?tab=settings'],
-    ['settings', '#/settings'],
+    ['settings-home', '#/settings'],
+    ['settings-organisation', '#/settings?pane=organisation'],
+    ['settings-taxes', '#/settings?pane=taxes'],
   ];
 
   for (const [name, hash] of routes) {
