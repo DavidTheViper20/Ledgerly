@@ -43,26 +43,153 @@ function reportHeader(title, sub) {
   </div>`;
 }
 
+// ---------- Report library (#/reports) ----------
+// UI-side mirror of src/services/report-library.js#filterReports / #toggleFavourite.
+// The renderer runs with contextIsolation (no Node `require`), so this pure logic
+// is duplicated here; the canonical, unit-tested implementation lives in the
+// service module (see tests/report-library.test.js), exactly like
+// annotateProviderAccounts is mirrored in ui/views/bank.js.
+function filterReports(reports, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return reports.slice();
+  return reports.filter((r) => {
+    const name = String(r.name || '').toLowerCase();
+    const desc = String(r.description || '').toLowerCase();
+    return name.includes(q) || desc.includes(q);
+  });
+}
+
+function toggleFavourite(favouritesJson, route) {
+  let list;
+  try {
+    const parsed = JSON.parse(favouritesJson || '[]');
+    list = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    list = [];
+  }
+  const idx = list.indexOf(route);
+  const next = idx === -1 ? [...list, route] : list.filter((r) => r !== route);
+  return JSON.stringify(next);
+}
+
+function parseFavourites(favouritesJson) {
+  try {
+    const parsed = JSON.parse(favouritesJson || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+const REPORT_CATEGORIES = [
+  {
+    name: 'Financial statements',
+    reports: [
+      { route: '#/reports/profit-loss', name: 'Profit and Loss', description: 'Income, expenses and profit over a period' },
+      { route: '#/reports/balance-sheet', name: 'Balance Sheet', description: 'Assets, liabilities and equity at a date' },
+      { route: '#/reports/trial-balance', name: 'Trial Balance', description: 'Debit and credit balances for every account' },
+    ],
+  },
+  {
+    name: 'Payables and receivables',
+    reports: [
+      { route: '#/reports/aged-receivables', name: 'Aged Receivables', description: 'Who owes you money and how overdue it is' },
+      { route: '#/reports/aged-payables', name: 'Aged Payables', description: 'Who you owe money to and when it is due' },
+    ],
+  },
+  {
+    name: 'Taxes and balances',
+    reports: [
+      { route: '#/reports/tax', name: 'Tax Summary', description: 'GST collected on sales and paid on purchases' },
+      {
+        route: '#/reports/bas', name: 'Activity Statement (BAS)',
+        description: 'Simpler BAS labels: G1, 1A, 1B, W1, W2 — opens the statement flow',
+        secondary: { href: '#/tax', label: 'Statement inbox' },
+      },
+      { route: '#/reports/account-transactions', name: 'Account Transactions', description: 'Every ledger entry for one account' },
+    ],
+  },
+  {
+    name: 'Budgets and forecasts',
+    reports: [
+      { route: '#/reports/budget-variance', name: 'Budget vs Actual', description: 'Performance against your budget' },
+      { route: '#/reports/cash-flow', name: 'Cash Flow Forecast', description: 'Projected bank balance from invoices and bills due' },
+    ],
+  },
+];
+
+const ALL_REPORTS = REPORT_CATEGORIES.flatMap(c => c.reports);
+
 VIEWS.reports = async function (main) {
-  const card = (href, title, desc) => `
-    <a class="card" href="${href}" style="display:block;color:inherit;text-decoration:none">
-      <h2 style="color:var(--brand)">${title}</h2>
-      <div style="color:var(--ink-soft);font-size:13px">${desc}</div>
-    </a>`;
-  main.innerHTML = `
-    <div class="page-head"><h1>Reports</h1></div>
-    <div class="grid cols-3">
-      ${card('#/reports/profit-loss', 'Profit and Loss', 'Income, expenses and profit over a period')}
-      ${card('#/reports/balance-sheet', 'Balance Sheet', 'Assets, liabilities and equity at a date')}
-      ${card('#/reports/trial-balance', 'Trial Balance', 'Debit and credit balances for every account')}
-      ${card('#/reports/aged-receivables', 'Aged Receivables', 'Who owes you money and how overdue it is')}
-      ${card('#/reports/aged-payables', 'Aged Payables', 'Who you owe money to and when it is due')}
-      ${card('#/reports/account-transactions', 'Account Transactions', 'Every ledger entry for one account')}
-      ${card('#/reports/tax', 'Tax Summary', 'GST collected on sales and paid on purchases')}
-      ${card('#/reports/bas', 'Activity Statement (BAS)', 'Simpler BAS labels: G1, 1A, 1B, W1, W2')}
-      ${card('#/reports/cash-flow', 'Cash Flow Forecast', 'Projected bank balance from invoices and bills due')}
-      ${card('#/reports/budget-variance', 'Budget vs Actual', 'Performance against your budget')}
-    </div>`;
+  let query = '';
+
+  const reportRow = (r) => {
+    const favs = parseFavourites(STATE.settings.report_favourites);
+    const starred = favs.includes(r.route);
+    return `
+      <div class="report-row" data-route="${esc(r.route)}">
+        <div class="report-row-main">
+          <a href="${r.route}">${esc(r.name)}</a>
+          <div class="report-row-desc">${esc(r.description)}</div>
+          ${r.secondary ? `<a class="report-row-secondary" href="${r.secondary.href}">${esc(r.secondary.label)}</a>` : ''}
+        </div>
+        <button type="button" class="report-star ${starred ? 'is-fav' : ''}" data-route="${esc(r.route)}"
+          title="${starred ? 'Remove from favourites' : 'Add to favourites'}" aria-pressed="${starred}">${starred ? '★' : '☆'}</button>
+      </div>`;
+  };
+
+  const render = () => {
+    const favs = parseFavourites(STATE.settings.report_favourites);
+    const favReports = ALL_REPORTS.filter(r => favs.includes(r.route));
+
+    const categoriesHtml = REPORT_CATEGORIES.map((cat) => {
+      const matched = filterReports(cat.reports, query);
+      if (!matched.length) return '';
+      return `
+        <section class="report-category">
+          <h2>${esc(cat.name)}</h2>
+          <div class="report-rows">${matched.map(reportRow).join('')}</div>
+        </section>`;
+    }).join('');
+
+    const anyMatch = filterReports(ALL_REPORTS, query).length > 0;
+
+    main.innerHTML = `
+      <div class="page-head"><h1>Reports</h1></div>
+      <div class="report-search-row">
+        <input class="search" id="report-search" placeholder="Search reports" value="${esc(query)}" />
+      </div>
+      <section class="report-category">
+        <h2>Favourites</h2>
+        <div class="report-rows">
+          ${favReports.length
+            ? favReports.map(reportRow).join('')
+            : '<div class="empty">Star reports to pin them here.</div>'}
+        </div>
+      </section>
+      <div class="grid cols-2 report-categories">
+        ${categoriesHtml}
+      </div>
+      ${query && !anyMatch ? `<div class="empty">No reports match '${esc(query)}'.</div>` : ''}
+    `;
+
+    document.getElementById('report-search')?.addEventListener('input', (ev) => {
+      query = ev.target.value;
+      render();
+      const el = document.getElementById('report-search');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    });
+
+    on(main, '.report-star', 'click', async (ev) => {
+      const route = ev.currentTarget.dataset.route;
+      const next = toggleFavourite(STATE.settings.report_favourites, route);
+      STATE.settings.report_favourites = next;
+      await api('settings.update', { report_favourites: next });
+      render();
+    });
+  };
+
+  render();
 };
 
 // ---------- Profit & Loss ----------

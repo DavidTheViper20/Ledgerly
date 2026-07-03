@@ -553,6 +553,7 @@ const DEFAULT_SETTINGS = {
   super_guarantee_pct: '12',   // AU super guarantee from 1 July 2025
   bas_cycle: 'quarterly',      // 'quarterly' | 'monthly' — activity statement frequency
   projects_enabled: '0',       // '1' shows the Projects nav item + project line columns/widgets
+  report_favourites: '[]',     // JSON array of starred report routes (e.g. "#/reports/tax")
 };
 
 // Idempotent column add for databases created by older versions.
@@ -688,4 +689,4 @@ function systemAccount(db, key) {
   return r;
 }
 
-module.exports = { open, getSetting, setSetting, systemAccount };
+module.exports = { open, getSetting, setSetting, systemAccount, DEFAULT_SETTINGS };
