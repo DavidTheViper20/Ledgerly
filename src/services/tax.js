@@ -2,11 +2,41 @@
 
 // ---------- Tax (Xero-style Activity Statements) ----------
 // Derives BAS period boundaries from the org's financial year settings and
-// bas_cycle, reusing reports.basSummary() for all tax math — this module
-// only works out periods, due dates and lodgement bookkeeping.
+// gst_period, reusing reports.basSummary() for GST/W1/W2 math — this module
+// works out periods, due dates, lodgement bookkeeping, and (Pass D1) layers
+// on the extra Full BAS / PAYG / obligation labels on top of basSummary().
+//
+// Pass D1 scope: settings model + statement label rendering only.
+//   - Pass D2 (not built here) is the cash-basis GST engine — gst_method
+//     'cash' is accepted as a setting value but gated out of the UI/save
+//     path until then; statements always compute accruals-basis via
+//     basSummary() regardless of gst_method.
+//   - Pass D3 (not built here) is PAYG instalment / monthly IAS statement
+//     generation — payg_wh_period 'monthly' currently behaves exactly like
+//     'quarterly' for statement labels (see cycleSetting() below).
 
 const { getSetting } = require('../db');
 const { basSummary, fyStart } = require('./reports');
+
+// gst_period supersedes the older bas_cycle setting. Existing orgs are
+// migrated to carry their bas_cycle choice forward into gst_period on first
+// open after upgrade (see db.js open()); this fallback additionally covers
+// any settings row that predates that migration running (e.g. restored
+// backups) by reading bas_cycle directly if gst_period is still unset.
+function gstPeriodSetting(db) {
+  const period = getSetting(db, 'gst_period');
+  if (period) return period;
+  return getSetting(db, 'bas_cycle') === 'monthly' ? 'monthly' : 'quarterly';
+}
+
+// Normalises the GST period into the step cadence buildPeriods() understands.
+// 'annually' steps 12 months; anything else falls back to quarterly.
+function cycleSetting(db) {
+  const period = gstPeriodSetting(db);
+  if (period === 'monthly') return 'monthly';
+  if (period === 'annually') return 'annually';
+  return 'quarterly';
+}
 
 function ymd(d) { return d.toISOString().slice(0, 10); }
 
@@ -17,10 +47,10 @@ function fyStartDate(db, today) {
 
 // Build the list of period [start, end] pairs (inclusive, ISO date strings)
 // from `seriesStart` up to and including the period containing `today`,
-// stepping monthly or quarterly from the financial-year start.
+// stepping monthly, quarterly or annually from the financial-year start.
 function buildPeriods(db, { seriesStart, today, cycle }) {
   const fyStartD = fyStartDate(db, seriesStart);
-  const stepMonths = cycle === 'monthly' ? 1 : 3;
+  const stepMonths = cycle === 'monthly' ? 1 : cycle === 'annually' ? 12 : 3;
   const todayD = new Date(today + 'T00:00:00Z');
   const seriesStartD = new Date(seriesStart + 'T00:00:00Z');
 
@@ -46,11 +76,18 @@ function buildPeriods(db, { seriesStart, today, cycle }) {
 }
 
 // Due date: monthly = 21 days after period end; quarterly = 28 days after,
-// except the Oct-Dec quarter (Q2 of the AU FY) which is due 28 February.
+// except the Oct-Dec quarter (Q2 of the AU FY) which is due 28 February;
+// annually = ATO's standard 2-months-plus after period end (approximate —
+// annual GST reporting due dates vary by lodgement pathway; treat as a
+// placeholder until Pass D3 wires up real IAS/annual lodgement scheduling).
 function dueDateFor(periodEnd, cycle) {
   const end = new Date(periodEnd + 'T00:00:00Z');
   if (cycle === 'monthly') {
     const d = new Date(end.getTime() + 21 * 864e5);
+    return ymd(d);
+  }
+  if (cycle === 'annually') {
+    const d = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 2, end.getUTCDate()));
     return ymd(d);
   }
   // Quarterly: Oct-Dec quarter (ends 31 Dec) is due 28 Feb of the next year.
@@ -71,14 +108,124 @@ function lodgementFor(db, periodStart, periodEnd) {
     .get(periodStart, periodEnd);
 }
 
-// netPayableCents = (1A GST on sales + W2 PAYG withheld) - (1B GST on purchases)
-function netPayableFromBas(bas) {
-  return bas.a1a_gst_on_sales_cents + bas.w2_payg_withheld_cents - bas.a1b_gst_on_purchases_cents;
+// ---------- Pass D1: Full BAS / PAYG / obligation label extras ----------
+// Layers extra statement figures on top of basSummary() without touching
+// basSummary() itself. Everything here is derived honestly from existing
+// data (invoice/bill lines, settings) or explicitly flagged in `footnotes`
+// as needing manual entry — no invented numbers.
+
+// G3 = period sales invoice lines taxed at a 0% rate that ISN'T "BAS
+// Excluded" (i.e. GST-free income, not out-of-scope income).
+// G11 = total purchase (bill) lines subject to any non-zero GST rate.
+// Mirrors basSummary()'s join style (invoice_lines -> tax_rates) since
+// journal_lines don't carry per-line tax-rate granularity.
+function fullBasFromLines(db, { from, to }) {
+  const g3 = db.prepare(`
+    SELECT COALESCE(SUM(il.net_cents),0) AS s
+    FROM invoice_lines il
+    JOIN invoices i ON i.id = il.invoice_id
+    JOIN tax_rates t ON t.id = il.tax_rate_id
+    WHERE i.kind = 'ACCREC' AND i.status IN ('AUTHORISED','PAID')
+      AND i.issue_date >= ? AND i.issue_date <= ?
+      AND t.rate = 0 AND t.name NOT LIKE 'BAS Excluded%'
+  `).get(from, to).s;
+  const g11 = db.prepare(`
+    SELECT COALESCE(SUM(il.net_cents),0) AS s
+    FROM invoice_lines il
+    JOIN invoices i ON i.id = il.invoice_id
+    JOIN tax_rates t ON t.id = il.tax_rate_id
+    WHERE i.kind = 'ACCPAY' AND i.status IN ('AUTHORISED','PAID')
+      AND i.issue_date >= ? AND i.issue_date <= ?
+      AND t.rate > 0
+  `).get(from, to).s;
+  return { g3, g11 };
+}
+
+// Builds the extra label set + footnotes + net-payable adjustment for a
+// statement, based on current settings. `bas` is the basSummary() result
+// (Simpler BAS labels + W1/W2 already computed there).
+function buildExtras(db, bas, { from, to }) {
+  const formType = getSetting(db, 'bas_form_type') === 'full' ? 'full' : 'simpler';
+  const wPeriod = getSetting(db, 'payg_wh_period') || 'quarterly'; // 'none' | 'monthly' | 'quarterly'
+  const itMethod = getSetting(db, 'payg_it_method') || 'none';     // 'none' | 'option1' | 'option2'
+
+  const footnotes = [];
+  const extras = { formType, wPeriod, itMethod };
+
+  // ---- Full BAS: G2/G3/G10/G11 ----
+  if (formType === 'full') {
+    const { g3, g11 } = fullBasFromLines(db, { from, to });
+    extras.g2_export_sales_cents = 0;
+    extras.g3_gst_free_sales_cents = g3;
+    extras.g10_capital_purchases_cents = 0;
+    extras.g11_non_capital_purchases_cents = g11;
+    footnotes.push('G2 (export sales) shown as $0 — Ledgerly does not track export sales separately yet; review manually.');
+    footnotes.push('G10 (capital purchases) shown as $0 — capital purchases need manual review; Ledgerly does not distinguish capital from non-capital purchases yet.');
+  }
+
+  // ---- PAYG withholding (W1/W2) visibility ----
+  // payg_wh_period 'monthly' currently renders identically to 'quarterly' on
+  // statement labels — Pass D3 is what actually interleaves monthly IAS
+  // statements between BAS quarters; until then this setting only toggles
+  // W-label visibility (via 'none'), matching pre-D1 behaviour otherwise.
+  extras.showWLabels = wPeriod !== 'none';
+
+  // ---- PAYG income tax instalments (T-labels / 5A) ----
+  if (itMethod === 'option1') {
+    const amount = Math.round(Number(getSetting(db, 'payg_instalment_amount_cents')) || 0);
+    extras.t7_instalment_amount_cents = amount;
+    extras.a5a_payg_instalment_cents = amount;
+  } else if (itMethod === 'option2') {
+    const t1 = bas.g1_total_sales_cents - bas.a1a_gst_on_sales_cents; // GST-exclusive sales income
+    const ratePct = Number(getSetting(db, 'payg_instalment_rate_pct')) || 0;
+    extras.t1_instalment_income_cents = t1;
+    extras.t2_instalment_rate_pct = ratePct;
+    extras.a5a_payg_instalment_cents = Math.round(t1 * (ratePct / 100));
+  }
+
+  // ---- Other obligations (toggles only — no automated calculation, v1) ----
+  const obligations = [];
+  if (getSetting(db, 'obligation_wet') === '1') {
+    obligations.push({ key: 'wet', name: 'Wine equalisation tax', labels: [{ code: '1C', name: 'WET payable', amountCents: 0 }, { code: '1D', name: 'WET refundable', amountCents: 0 }] });
+  }
+  if (getSetting(db, 'obligation_lct') === '1') {
+    obligations.push({ key: 'lct', name: 'Luxury car tax', labels: [{ code: '1E', name: 'LCT payable', amountCents: 0 }, { code: '1F', name: 'LCT refundable', amountCents: 0 }] });
+  }
+  if (getSetting(db, 'obligation_ftc') === '1') {
+    obligations.push({ key: 'ftc', name: 'Fuel tax credits', labels: [{ code: '7C', name: 'FTC gross amount', amountCents: 0 }, { code: '7D', name: 'FTC credit', amountCents: 0 }] });
+  }
+  if (getSetting(db, 'obligation_fbt') === '1') {
+    obligations.push({ key: 'fbt', name: 'Fringe benefits tax', labels: [{ code: 'F1', name: 'FBT instalment', amountCents: 0 }] });
+  }
+  if (obligations.length) {
+    extras.obligations = obligations;
+    footnotes.push('Fuel tax credits, WET, LCT and FBT amounts need manual entry at lodgement — Ledgerly does not calculate these (v1).');
+  }
+
+  extras.footnotes = footnotes;
+  return extras;
+}
+
+// netPayableCents = 1A + (W2 if PAYG withholding active) + (5A if PAYG income
+// tax active) - 1B - (7D FTC credit if toggled, currently always $0).
+function netPayableFromBas(bas, extras) {
+  const e = extras || {};
+  let net = bas.a1a_gst_on_sales_cents - bas.a1b_gst_on_purchases_cents;
+  if (e.showWLabels !== false) net += bas.w2_payg_withheld_cents;
+  if (e.a5a_payg_instalment_cents) net += e.a5a_payg_instalment_cents;
+  // 7D FTC credit reduces net payable once calculated (Pass D2/D3+); v1 it's
+  // always $0 so this is a no-op today, kept explicit for when it isn't.
+  const ftc = (e.obligations || []).find(o => o.key === 'ftc');
+  if (ftc) {
+    const sevenD = ftc.labels.find(l => l.code === '7D');
+    if (sevenD) net -= sevenD.amountCents;
+  }
+  return net;
 }
 
 function listStatements(db, { today: todayArg } = {}) {
   const today = todayArg || new Date().toISOString().slice(0, 10);
-  const cycle = getSetting(db, 'bas_cycle') === 'monthly' ? 'monthly' : 'quarterly';
+  const cycle = cycleSetting(db);
   const earliest = earliestJournalDate(db);
   const seriesStart = earliest || fyStart(db, today);
 
@@ -95,9 +242,10 @@ function listStatements(db, { today: todayArg } = {}) {
       if (!current || periodStart > current.periodStart) {
         const dueDate = dueDateFor(periodEnd, cycle);
         const bas = basSummary(db, { from: periodStart, to: today });
+        const extras = buildExtras(db, bas, { from: periodStart, to: today });
         current = {
           periodStart, periodEnd, dueDate,
-          netPayableCents: netPayableFromBas(bas),
+          netPayableCents: netPayableFromBas(bas, extras),
         };
       }
       continue;
@@ -115,11 +263,12 @@ function listStatements(db, { today: todayArg } = {}) {
       });
     } else {
       const bas = basSummary(db, { from: periodStart, to: periodEnd });
+      const extras = buildExtras(db, bas, { from: periodStart, to: periodEnd });
       needsAttention.push({
         periodStart, periodEnd, dueDate,
         status: 'DRAFT',
         overdue: dueDate < today,
-        netPayableCents: netPayableFromBas(bas),
+        netPayableCents: netPayableFromBas(bas, extras),
       });
     }
   }
@@ -130,7 +279,7 @@ function listStatements(db, { today: todayArg } = {}) {
   // derive it directly from the FY start.
   if (!current) {
     const fyStartD = fyStart(db, today);
-    const stepMonths = cycle === 'monthly' ? 1 : 3;
+    const stepMonths = cycle === 'monthly' ? 1 : cycle === 'annually' ? 12 : 3;
     const start = new Date(fyStartD + 'T00:00:00Z');
     const todayD = new Date(today + 'T00:00:00Z');
     let cursor = new Date(start);
@@ -144,7 +293,8 @@ function listStatements(db, { today: todayArg } = {}) {
     const periodEnd = ymd(new Date(next.getTime() - 864e5));
     const dueDate = dueDateFor(periodEnd, cycle);
     const bas = basSummary(db, { from: periodStart, to: today });
-    current = { periodStart, periodEnd, dueDate, netPayableCents: netPayableFromBas(bas) };
+    const extras = buildExtras(db, bas, { from: periodStart, to: today });
+    current = { periodStart, periodEnd, dueDate, netPayableCents: netPayableFromBas(bas, extras) };
   }
 
   // Needs attention: soonest due first. Completed: most recently lodged first.
@@ -155,14 +305,16 @@ function listStatements(db, { today: todayArg } = {}) {
 }
 
 function getStatement(db, { from, to }) {
-  const cycle = getSetting(db, 'bas_cycle') === 'monthly' ? 'monthly' : 'quarterly';
+  const cycle = cycleSetting(db);
   const bas = basSummary(db, { from, to });
+  const extras = buildExtras(db, bas, { from, to });
   const dueDate = dueDateFor(to, cycle);
   const lodged = lodgementFor(db, from, to);
   return {
     ...bas,
+    ...extras,
     dueDate,
-    netPayableCents: netPayableFromBas(bas),
+    netPayableCents: lodged ? lodged.net_payable_cents : netPayableFromBas(bas, extras),
     status: lodged ? 'LODGED' : 'DRAFT',
     lodgement: lodged || null,
   };
@@ -172,11 +324,13 @@ function markLodged(db, { from, to }) {
   const existing = lodgementFor(db, from, to);
   if (existing) throw new Error('This period has already been lodged');
   const bas = basSummary(db, { from, to });
-  const netPayableCents = netPayableFromBas(bas);
+  const extras = buildExtras(db, bas, { from, to });
+  const netPayableCents = netPayableFromBas(bas, extras);
+  const figures = { ...bas, ...extras };
   const r = db.prepare(`INSERT INTO activity_statements
     (period_start, period_end, lodged_at, figures_json, net_payable_cents)
     VALUES (?, ?, datetime('now'), ?, ?)`)
-    .run(from, to, JSON.stringify(bas), netPayableCents);
+    .run(from, to, JSON.stringify(figures), netPayableCents);
   return db.prepare('SELECT * FROM activity_statements WHERE id = ?').get(Number(r.lastInsertRowid));
 }
 

@@ -54,7 +54,8 @@ test('tax: overdue flag set only once due date has passed', () => {
 test('tax: monthly cycle produces one period per month', () => {
   const env = setupBasics();
   postSale(env, { cents: 100000, issueDate: '2025-08-10' });
-  call('settings.update', { bas_cycle: 'monthly' });
+  // gst_period supersedes bas_cycle (Pass D1) — set the new setting directly.
+  call('settings.update', { gst_period: 'monthly' });
   const r = call('tax.statements', { today: '2025-11-05' });
   const periods = r.needsAttention.map(s => [s.periodStart, s.periodEnd, s.dueDate]);
   assert.deepEqual(periods, [

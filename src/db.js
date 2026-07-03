@@ -551,9 +551,27 @@ const DEFAULT_SETTINGS = {
   ai_context_length: '8192',
   tax_label: 'GST',
   super_guarantee_pct: '12',   // AU super guarantee from 1 July 2025
-  bas_cycle: 'quarterly',      // 'quarterly' | 'monthly' — activity statement frequency
+  bas_cycle: 'quarterly',      // 'quarterly' | 'monthly' — activity statement frequency (superseded by gst_period; kept for back-compat fallback)
   projects_enabled: '0',       // '1' shows the Projects nav item + project line columns/widgets
   report_favourites: '[]',     // JSON array of starred report routes (e.g. "#/reports/tax")
+
+  // ---- GST/BAS settings (Pass D1 — see docs/superpowers/plans/2026-07-03-xero-ia-product-plan.md §4) ----
+  bas_form_type: 'simpler',    // 'simpler' | 'full' — Full BAS adds G2/G3/G10/G11 labels
+  gst_period: 'quarterly',     // 'monthly' | 'quarterly' | 'annually' — supersedes bas_cycle for new orgs.
+                                // Existing orgs (DB predates this setting) are migrated in migrate() below
+                                // to inherit their bas_cycle value instead of this default, so they keep
+                                // their prior choice. Everywhere that reads the cycle should read
+                                // gst_period first and fall back to bas_cycle if gst_period is unset.
+  gst_method: 'accruals',      // 'accruals' | 'cash' — cash-basis engine is Pass D2; never persist 'cash' yet
+  payg_wh_period: 'quarterly', // 'none' | 'monthly' | 'quarterly' — preserves today's behaviour (W1/W2 on
+                                // every quarterly statement) by defaulting to 'quarterly'
+  payg_it_method: 'none',      // 'none' | 'option1' | 'option2' — PAYG income tax instalment method
+  payg_instalment_amount_cents: '0', // option1: ATO-advised instalment amount (5A)
+  payg_instalment_rate_pct: '0',     // option2: ATO-advised instalment rate applied to T1 (5A = T1 * rate)
+  obligation_ftc: '0',         // Fuel tax credits — surfaces 7C/7D labels only, no calculation (v1)
+  obligation_wet: '0',         // Wine equalisation tax — surfaces 1C/1D labels only, no calculation (v1)
+  obligation_lct: '0',         // Luxury car tax — surfaces 1E/1F labels only, no calculation (v1)
+  obligation_fbt: '0',         // Fringe benefits tax — surfaces F1 label only, no calculation (v1)
 };
 
 // Idempotent column add for databases created by older versions.
@@ -644,7 +662,17 @@ function open(filePath) {
   const db = new DatabaseSync(filePath);
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(SCHEMA);
+  // Detect a pre-existing org (has a bas_cycle row already, from before gst_period
+  // existed) BEFORE seedDefaults() inserts the new gst_period default — so we can
+  // migrate their prior bas_cycle choice into gst_period instead of losing it.
+  const priorBasCycle = db.prepare("SELECT value FROM settings WHERE key = 'bas_cycle'").get();
+  const hadGstPeriod = db.prepare("SELECT 1 FROM settings WHERE key = 'gst_period'").get();
   seedDefaults(db);
+  if (priorBasCycle && !hadGstPeriod) {
+    // Existing org, new setting: inherit their bas_cycle choice verbatim (only
+    // 'monthly'/'quarterly' were ever valid bas_cycle values).
+    setSetting(db, 'gst_period', priorBasCycle.value === 'monthly' ? 'monthly' : 'quarterly');
+  }
   migrate(db);
   return db;
 }
