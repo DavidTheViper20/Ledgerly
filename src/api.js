@@ -380,7 +380,11 @@ const METHODS = {
   'payroll.payWages': (db, a) => payroll.payWages(db, a),
   'payroll.deleteRun': (db, a) => payroll.deletePayRun(db, a.id),
 
-  'reports.bas': (db, a) => reports.basSummary(db, a),
+  // reports.bas honours gst_method so the BAS report and the Tax-section
+  // statement never disagree: 'cash' uses the payment-dated engine, else accruals.
+  'reports.bas': (db, a) => (getSetting(db, 'gst_method') === 'cash'
+    ? reports.cashBasSummary(db, a)
+    : reports.basSummary(db, a)),
   'reports.cashFlowForecast': (db, a) => reports.cashFlowForecast(db, a || {}),
   'reports.budgetVsActual': (db, a) => reports.budgetVsActual(db, a),
   'budgets.get': (db, a) => reports.getBudgets(db, a),

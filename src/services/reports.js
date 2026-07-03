@@ -3,6 +3,7 @@
 const { ACCOUNT_TYPES, TYPE_LABELS } = require('../coa');
 const { allBalances } = require('./ledger');
 const { getSetting, systemAccount } = require('../db');
+const { round } = require('../money');
 
 function accounts(db) {
   return db.prepare('SELECT * FROM accounts ORDER BY code').all();
@@ -243,7 +244,25 @@ function basSummary(db, { from, to }) {
   const revenue = db.prepare(`SELECT COALESCE(SUM(jl.credit_cents - jl.debit_cents),0) AS net
     FROM journal_lines jl JOIN journals j ON j.id = jl.journal_id JOIN accounts a ON a.id = jl.account_id
     WHERE j.status='POSTED' AND a.type IN ('REVENUE','OTHER_INCOME') AND j.date>=? AND j.date<=?`).get(from, to);
-  // W1/W2 from payroll control accounts (if used)
+  const { w1, w2 } = paygWithholding(db, { from, to });
+  return {
+    from, to,
+    g1_total_sales_cents: revenue.net + gst.collected,
+    a1a_gst_on_sales_cents: gst.collected,
+    a1b_gst_on_purchases_cents: gst.paid,
+    w1_gross_wages_cents: w1,
+    w2_payg_withheld_cents: w2,
+    net_gst_cents: gst.collected - gst.paid,
+    total_obligation_cents: gst.collected - gst.paid + w2,
+  };
+}
+
+// W1 (gross wages) and W2 (PAYG withheld) from payroll control accounts, dated
+// by pay run. Shared verbatim by both the accruals (basSummary) and cash-basis
+// (cashBasSummary) engines — PAYG withholding is already payment-dated in
+// substance (pay runs post on their payment date), so cash basis reuses it
+// unchanged rather than re-deriving it.
+function paygWithholding(db, { from, to }) {
   let w1 = 0, w2 = 0;
   try {
     const wagesExp = systemAccount(db, 'WAGES_EXP');
@@ -256,15 +275,103 @@ function basSummary(db, { from, to }) {
       WHERE j.status='POSTED' AND jl.account_id=? AND j.date>=? AND j.date<=? AND j.source_kind='pay_run'`)
       .get(payg.id, from, to).s;
   } catch { /* payroll accounts not present in very old files */ }
+  return { w1, w2 };
+}
+
+// ---------- Cash-basis BAS summary (Pass D2) ----------
+// Attributes GST to the period in which payment is RECEIVED (sales) or MADE
+// (purchases), per the ATO cash-accounting method. Returns the SAME shape as
+// basSummary() so tax.js can swap engines transparently.
+//
+// Cash events considered:
+//   - Invoice/bill/credit-note payments (payments table): document tax is
+//     apportioned pro-rata to each payment — gstPortion = round(tax * amount /
+//     total) — and signed by the document kind. G1 (gross sales) receives the
+//     base-currency payment amount for receivable payments.
+//   - Spend/receive money (bank_transactions): already cash events at their tx
+//     date; RECEIVE tax -> 1A (total -> G1), SPEND tax -> 1B. This mirrors
+//     accruals exactly (they're simultaneous), so the two engines agree here.
+//   - Expense claims: a cash event at the PAID date (paid_journal_id's journal
+//     date); the claim's tax_cents -> 1B. Unpaid claims contribute nothing.
+//   - Credit allocations are NOT cash events and are ignored — they never touch
+//     the payments table, so an invoice settled purely by a credit allocation
+//     (and the credit note it consumed) both contribute zero, netting to zero.
+//   - W1/W2 reuse basSummary()'s payroll-dated figures unchanged.
+//
+// Rounding is round-half-away-from-zero via money.round(), matching docs.js /
+// TPAR apportionment.
+//
+// G1 rounding note: to keep G1 = (GST-exclusive sales) + 1A consistent to the
+// cent, gross is derived as (base payment amount), and 1A as the pro-rata GST;
+// the GST-exclusive remainder is implied. Base amounts are used throughout so
+// multi-currency payments contribute in base currency (mirroring how basSummary
+// reads base-currency journal postings).
+function cashBasSummary(db, { from, to }) {
+  let gstCollected = 0;  // 1A
+  let gstPaid = 0;       // 1B
+  let g1Gross = 0;       // G1 (gross sales, base currency)
+
+  // ---- invoice / bill / credit-note payments ----
+  const payments = db.prepare(`
+    SELECT p.amount_cents, p.base_amount_cents, p.exchange_rate,
+           i.kind, i.tax_cents AS inv_tax_cents, i.total_cents AS inv_total_cents,
+           i.exchange_rate AS inv_exchange_rate
+    FROM payments p
+    JOIN invoices i ON i.id = p.invoice_id
+    WHERE p.date >= ? AND p.date <= ?
+  `).all(from, to);
+  for (const p of payments) {
+    if (!p.amount_cents || !p.inv_total_cents) continue;
+    const invRate = p.inv_exchange_rate || 1;
+    // Document tax in base currency, apportioned pro-rata to the payment.
+    const baseTax = round((p.inv_tax_cents || 0) * invRate);
+    const gstBase = round(baseTax * (p.amount_cents / p.inv_total_cents));
+    // Gross payment in base currency (what hit the bank), for G1.
+    const grossBase = p.base_amount_cents != null
+      ? p.base_amount_cents
+      : round(p.amount_cents * (p.exchange_rate || invRate || 1));
+    switch (p.kind) {
+      case 'ACCREC':        // customer payment received -> +1A, +G1
+        gstCollected += gstBase; g1Gross += grossBase; break;
+      case 'ACCRECCREDIT':  // customer refund paid out -> -1A, -G1
+        gstCollected -= gstBase; g1Gross -= grossBase; break;
+      case 'ACCPAY':        // supplier payment made -> +1B
+        gstPaid += gstBase; break;
+      case 'ACCPAYCREDIT':  // supplier refund received -> -1B
+        gstPaid -= gstBase; break;
+    }
+  }
+
+  // ---- spend / receive money (already cash-dated) ----
+  const receive = db.prepare(`SELECT COALESCE(SUM(tax_cents),0) AS tax, COALESCE(SUM(total_cents),0) AS total
+    FROM bank_transactions WHERE kind='RECEIVE' AND status='AUTHORISED' AND date>=? AND date<=?`).get(from, to);
+  const spend = db.prepare(`SELECT COALESCE(SUM(tax_cents),0) AS tax
+    FROM bank_transactions WHERE kind='SPEND' AND status='AUTHORISED' AND date>=? AND date<=?`).get(from, to);
+  gstCollected += receive.tax;
+  g1Gross += receive.total;
+  gstPaid += spend.tax;
+
+  // ---- expense claims (cash event at the paid_journal_id journal date) ----
+  const claims = db.prepare(`
+    SELECT ec.tax_cents
+    FROM expense_claims ec
+    JOIN journals j ON j.id = ec.paid_journal_id
+    WHERE ec.paid_journal_id IS NOT NULL AND j.status='POSTED'
+      AND j.date >= ? AND j.date <= ?
+  `).all(from, to);
+  for (const c of claims) gstPaid += (c.tax_cents || 0);
+
+  const { w1, w2 } = paygWithholding(db, { from, to });
   return {
     from, to,
-    g1_total_sales_cents: revenue.net + gst.collected,
-    a1a_gst_on_sales_cents: gst.collected,
-    a1b_gst_on_purchases_cents: gst.paid,
+    basis: 'cash',
+    g1_total_sales_cents: g1Gross,
+    a1a_gst_on_sales_cents: gstCollected,
+    a1b_gst_on_purchases_cents: gstPaid,
     w1_gross_wages_cents: w1,
     w2_payg_withheld_cents: w2,
-    net_gst_cents: gst.collected - gst.paid,
-    total_obligation_cents: gst.collected - gst.paid + w2,
+    net_gst_cents: gstCollected - gstPaid,
+    total_obligation_cents: gstCollected - gstPaid + w2,
   };
 }
 
@@ -335,5 +442,5 @@ function budgetVsActual(db, { from, to }) {
 
 module.exports = {
   profitAndLoss, balanceSheet, trialBalance, agedDocuments, accountTransactions, taxSummary,
-  cashSummary, fyStart, basSummary, cashFlowForecast, setBudgets, getBudgets, budgetVsActual,
+  cashSummary, fyStart, basSummary, cashBasSummary, cashFlowForecast, setBudgets, getBudgets, budgetVsActual,
 };

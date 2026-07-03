@@ -92,11 +92,19 @@ VIEWS.reports = async function (main) {
   const reportRow = (r) => {
     const favs = parseFavourites(STATE.settings.report_favourites);
     const starred = favs.includes(r.route);
+    // The BAS row's basis wording follows the org's GST accounting method so
+    // the library never implies accruals when the statement is cash-basis.
+    let description = r.description;
+    if (r.route === '#/reports/bas') {
+      description = STATE.settings.gst_method === 'cash'
+        ? 'Simpler BAS labels: G1, 1A, 1B, W1, W2 (cash basis) — opens the statement flow'
+        : 'Simpler BAS labels: G1, 1A, 1B, W1, W2 (accruals basis) — opens the statement flow';
+    }
     return `
       <div class="report-row" data-route="${esc(r.route)}">
         <div class="report-row-main">
           <a href="${r.route}">${esc(r.name)}</a>
-          <div class="report-row-desc">${esc(r.description)}</div>
+          <div class="report-row-desc">${esc(description)}</div>
           ${r.secondary ? `<a class="report-row-secondary" href="${r.secondary.href}">${esc(r.secondary.label)}</a>` : ''}
         </div>
         <button type="button" class="report-star ${starred ? 'is-fav' : ''}" data-route="${esc(r.route)}"
@@ -369,11 +377,16 @@ VIEWS.reportBAS = async function (main, params) {
   const from = params.from || defFrom;
   const to = params.to || today();
   const r = await api('reports.bas', { from, to });
+  const isCash = r.basis === 'cash';
+  const basisLabel = isCash ? 'Cash basis' : 'Accruals basis';
+  const disclaimer = isCash
+    ? 'Figures are derived from payments on a cash basis (GST reported when you receive or make payment). Verify against your records before lodging — this summary is an estimate, not a lodgeable form.'
+    : 'Figures are derived from posted journals on an accruals basis. Verify against your records before lodging — this summary is an estimate, not a lodgeable form.';
   main.innerHTML = `
     <div class="page-head no-print"><h1>Activity Statement (BAS)</h1></div>
     ${reportToolbar({ from, to })}
     <div class="card" style="max-width:680px;margin:0 auto">
-      ${reportHeader('Activity Statement summary', `For the period ${fmtDate(from)} to ${fmtDate(to)} · Simpler BAS`)}
+      ${reportHeader('Activity Statement summary', `For the period ${fmtDate(from)} to ${fmtDate(to)} · Simpler BAS · ${basisLabel}`)}
       <table class="data">
         <tbody>
           <tr><td><b>G1</b> Total sales (including GST)</td><td class="num">${fmtMoney(r.g1_total_sales_cents)}</td></tr>
@@ -388,8 +401,7 @@ VIEWS.reportBAS = async function (main, params) {
         </tbody>
       </table>
       <p style="color:var(--ink-soft);font-size:12.5px">
-        Figures are derived from posted journals on an accruals basis. Verify against your records
-        before lodging — this summary is an estimate, not a lodgeable form.
+        ${disclaimer}
       </p>
     </div>`;
   wireToolbar(() => navigate(`#/reports/bas?from=${document.getElementById('rp-from').value}&to=${document.getElementById('rp-to').value}`), 'bas-summary.pdf');

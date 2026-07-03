@@ -203,18 +203,25 @@ test('bas settings: no obligations toggled means no obligations array entries', 
   assert.equal(stmt.obligations, undefined);
 });
 
-// ---------- gst_method gating ----------
+// ---------- gst_method engine selection (Pass D2) ----------
 
-test('bas settings: gst_method cash cannot be saved (never persisted as cash yet)', () => {
-  // Pass D1 accepts gst_method as a setting key but the cash engine is Pass
-  // D2 — this test documents that even if 'cash' were written directly to
-  // settings.update, statement math stays accruals-based via basSummary().
-  call('settings.update', { gst_method: 'cash' });
+test('bas settings: gst_method cash selects the payment-dated engine', () => {
+  // Pass D2 wires the cash engine: with gst_method='cash', statement figures
+  // are payment-dated. An unpaid invoice therefore contributes 0 to 1A on cash
+  // basis, whereas the accruals default recognises it at issue date.
   const env = setupBasics();
-  postSale(env, { cents: 100000, issueDate: '2025-08-10' });
-  const stmt = call('tax.statement', { from: '2025-07-01', to: '2025-09-30' });
-  // Figures are unaffected by gst_method — always accruals via basSummary().
-  assert.equal(stmt.a1a_gst_on_sales_cents, 10000);
+  postSale(env, { cents: 100000, issueDate: '2025-08-10' }); // approved, unpaid
+
+  // Default (accruals): 1A recognised at issue date.
+  const accrualsStmt = call('tax.statement', { from: '2025-07-01', to: '2025-09-30' });
+  assert.equal(accrualsStmt.a1a_gst_on_sales_cents, 10000);
+  assert.equal(accrualsStmt.basis, 'accruals');
+
+  // Cash: nothing recognised until payment is received.
+  call('settings.update', { gst_method: 'cash' });
+  const cashStmt = call('tax.statement', { from: '2025-07-01', to: '2025-09-30' });
+  assert.equal(cashStmt.a1a_gst_on_sales_cents, 0);
+  assert.equal(cashStmt.basis, 'cash');
 });
 
 // ---------- Simpler BAS unchanged with default settings ----------

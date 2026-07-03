@@ -6,17 +6,26 @@
 // works out periods, due dates, lodgement bookkeeping, and (Pass D1) layers
 // on the extra Full BAS / PAYG / obligation labels on top of basSummary().
 //
-// Pass D1 scope: settings model + statement label rendering only.
-//   - Pass D2 (not built here) is the cash-basis GST engine — gst_method
-//     'cash' is accepted as a setting value but gated out of the UI/save
-//     path until then; statements always compute accruals-basis via
-//     basSummary() regardless of gst_method.
+// Pass D1 scope: settings model + statement label rendering.
+//   - Pass D2 (this pass) adds the cash-basis GST engine — gst_method 'cash'
+//     now selects cashBasSummary() (payment-dated GST) in place of basSummary()
+//     for all statement figures, via basEngine() below.
 //   - Pass D3 (not built here) is PAYG instalment / monthly IAS statement
 //     generation — payg_wh_period 'monthly' currently behaves exactly like
 //     'quarterly' for statement labels (see cycleSetting() below).
 
 const { getSetting } = require('../db');
-const { basSummary, fyStart } = require('./reports');
+const { basSummary, cashBasSummary, fyStart } = require('./reports');
+
+// D1/D2 engine seam: select the BAS figures engine by the gst_method setting.
+// 'cash' -> cashBasSummary (GST recognised on payment date); anything else ->
+// basSummary (accruals, GST recognised on invoice date). Both return the same
+// shape, so every caller below (listStatements, getStatement, markLodged) swaps
+// engines transparently just by routing through here.
+function basEngine(db, { from, to }) {
+  const method = getSetting(db, 'gst_method') === 'cash' ? 'cash' : 'accruals';
+  return method === 'cash' ? cashBasSummary(db, { from, to }) : basSummary(db, { from, to });
+}
 
 // gst_period supersedes the older bas_cycle setting. Existing orgs are
 // migrated to carry their bas_cycle choice forward into gst_period on first
@@ -161,6 +170,14 @@ function buildExtras(db, bas, { from, to }) {
     extras.g11_non_capital_purchases_cents = g11;
     footnotes.push('G2 (export sales) shown as $0 — Ledgerly does not track export sales separately yet; review manually.');
     footnotes.push('G10 (capital purchases) shown as $0 — capital purchases need manual review; Ledgerly does not distinguish capital from non-capital purchases yet.');
+    // On cash basis, the primary 1A/1B/G1 figures are payment-dated, but G3/G11
+    // are derived from invoice lines by issue date (fullBasFromLines()) — the
+    // line-level data needed to apportion them pro-rata to each payment isn't
+    // tracked, so we report them accruals-derived and say so, choosing accuracy
+    // + honesty over a convoluted approximation.
+    if (getSetting(db, 'gst_method') === 'cash') {
+      footnotes.push('G3/G11 derived on an accruals basis (from invoice/bill lines by issue date), not on the cash basis used for 1A/1B/G1.');
+    }
   }
 
   // ---- PAYG withholding (W1/W2) visibility ----
@@ -241,7 +258,7 @@ function listStatements(db, { today: todayArg } = {}) {
     if (periodEnd >= today) {
       if (!current || periodStart > current.periodStart) {
         const dueDate = dueDateFor(periodEnd, cycle);
-        const bas = basSummary(db, { from: periodStart, to: today });
+        const bas = basEngine(db, { from: periodStart, to: today });
         const extras = buildExtras(db, bas, { from: periodStart, to: today });
         current = {
           periodStart, periodEnd, dueDate,
@@ -262,7 +279,7 @@ function listStatements(db, { today: todayArg } = {}) {
         lodgedAt: lodged.lodged_at,
       });
     } else {
-      const bas = basSummary(db, { from: periodStart, to: periodEnd });
+      const bas = basEngine(db, { from: periodStart, to: periodEnd });
       const extras = buildExtras(db, bas, { from: periodStart, to: periodEnd });
       needsAttention.push({
         periodStart, periodEnd, dueDate,
@@ -292,7 +309,7 @@ function listStatements(db, { today: todayArg } = {}) {
     const periodStart = ymd(cursor);
     const periodEnd = ymd(new Date(next.getTime() - 864e5));
     const dueDate = dueDateFor(periodEnd, cycle);
-    const bas = basSummary(db, { from: periodStart, to: today });
+    const bas = basEngine(db, { from: periodStart, to: today });
     const extras = buildExtras(db, bas, { from: periodStart, to: today });
     current = { periodStart, periodEnd, dueDate, netPayableCents: netPayableFromBas(bas, extras) };
   }
@@ -306,13 +323,16 @@ function listStatements(db, { today: todayArg } = {}) {
 
 function getStatement(db, { from, to }) {
   const cycle = cycleSetting(db);
-  const bas = basSummary(db, { from, to });
+  const bas = basEngine(db, { from, to });
   const extras = buildExtras(db, bas, { from, to });
   const dueDate = dueDateFor(to, cycle);
   const lodged = lodgementFor(db, from, to);
   return {
     ...bas,
     ...extras,
+    // basSummary() leaves basis undefined; cashBasSummary() sets it to 'cash'.
+    // Normalise so the UI subtitle can always read a definite value.
+    basis: bas.basis === 'cash' ? 'cash' : 'accruals',
     dueDate,
     netPayableCents: lodged ? lodged.net_payable_cents : netPayableFromBas(bas, extras),
     status: lodged ? 'LODGED' : 'DRAFT',
@@ -323,7 +343,7 @@ function getStatement(db, { from, to }) {
 function markLodged(db, { from, to }) {
   const existing = lodgementFor(db, from, to);
   if (existing) throw new Error('This period has already been lodged');
-  const bas = basSummary(db, { from, to });
+  const bas = basEngine(db, { from, to });
   const extras = buildExtras(db, bas, { from, to });
   const netPayableCents = netPayableFromBas(bas, extras);
   const figures = { ...bas, ...extras };

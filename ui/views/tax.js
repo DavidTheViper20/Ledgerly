@@ -74,13 +74,18 @@ VIEWS.tax = async function (main, params) {
 
 async function renderActivityStatements(main) {
   const r = await api('tax.statements');
+  const s = await api('settings.all');
+  const isCash = s.gst_method === 'cash';
+  const basisSub = isCash
+    ? 'Figures are cash-basis, derived from payments (GST is reported in the period you receive or make payment).'
+    : 'Figures are accruals-basis, derived from your posted journals (Simpler BAS labels).';
   const currentLabel = r.current ? periodLabel(r.current.periodStart, r.current.periodEnd) : '';
 
   main.innerHTML = `
     <div class="page-head"><h1>Tax</h1></div>
     ${taxTabs('statements')}
     <div class="page-sub">
-      Figures are accruals-basis, derived from your posted journals (Simpler BAS labels).
+      ${basisSub}
     </div>
 
     ${r.current ? `
@@ -211,7 +216,7 @@ async function renderTaxSettings(main) {
   // UI never shows a blank selection (mirrors tax.js gstPeriodSetting()).
   const gstPeriod = s.gst_period || (s.bas_cycle === 'monthly' ? 'monthly' : 'quarterly');
   const formType = s.bas_form_type === 'full' ? 'full' : 'simpler';
-  const gstMethod = s.gst_method === 'cash' ? 'cash' : 'accruals'; // 'cash' can never actually be saved yet
+  const gstMethod = s.gst_method === 'cash' ? 'cash' : 'accruals';
   const whPeriod = s.payg_wh_period || 'quarterly';
   const itMethod = s.payg_it_method || 'none';
 
@@ -243,8 +248,11 @@ async function renderTaxSettings(main) {
         <label class="field" style="margin:14px 0 6px">GST accounting method</label>
         ${radioField('gst_method', 'accruals', gstMethod === 'accruals', 'Accruals',
           'GST is recognised when invoices and bills are approved, not when paid (default).')}
-        ${radioField('gst_method', 'cash', false,
-          'Cash', 'Cash basis is coming soon — statements currently use the accruals method.', true)}
+        ${radioField('gst_method', 'cash', gstMethod === 'cash',
+          'Cash', 'GST is recognised when you receive or make payment.')}
+        <div style="font-size:12px;color:var(--ink-soft);margin:2px 0 0 26px;font-weight:400">
+          Cash: GST is reported in the period you receive or make payment. Accruals: in the period you issue or receive the invoice.
+        </div>
 
         <button class="btn primary" type="submit" style="margin-top:8px">Save GST settings</button>
       </form>
@@ -328,9 +336,6 @@ async function renderTaxSettings(main) {
     ev.preventDefault();
     try {
       const data = Object.fromEntries(new FormData(ev.target).entries());
-      // The Cash radio is disabled and can never actually be submitted, but
-      // guard here too in case a future markup change loosens that.
-      if (data.gst_method === 'cash') data.gst_method = 'accruals';
       await api('settings.update', data);
       toast('GST settings saved', 'success');
       await loadRefData();
@@ -408,6 +413,7 @@ VIEWS.taxStatement = async function (main, params) {
   const formType = r.formType === 'full' ? 'full' : 'simpler';
   const formLabel = formType === 'full' ? 'Full BAS' : 'Simpler BAS';
   const showW = r.showWLabels !== false;
+  const basisLabel = r.basis === 'cash' ? 'Cash basis' : 'Accruals basis';
 
   const gstRows = `
     <tr><td><b>G1</b> Total sales (including GST)</td><td class="num">${fmtMoney(r.g1_total_sales_cents)}</td></tr>
@@ -469,7 +475,7 @@ VIEWS.taxStatement = async function (main, params) {
       </div>` : ''}
 
     <div class="card" style="max-width:680px;margin:0 auto">
-      ${reportHeader('Activity Statement', `For the period ${fmtDate(from)} to ${fmtDate(to)} · ${formLabel}`)}
+      ${reportHeader('Activity Statement', `For the period ${fmtDate(from)} to ${fmtDate(to)} · ${formLabel} · ${basisLabel}`)}
 
       <h3 style="margin-bottom:6px">Goods and services tax (GST)</h3>
       <table class="data"><tbody>${gstRows}</tbody></table>
