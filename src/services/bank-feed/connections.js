@@ -153,6 +153,29 @@ function markAccountLinkSynced(db, { linkId, connectionId, syncedAt } = {}) {
   return linkRow(db, linkId);
 }
 
+// Pure helper (no DB access) used by the feed-first "add bank account" UI: given the
+// provider accounts returned by listProviderAccounts and the existing account links
+// (from status().accountLinks), decide which provider accounts are selectable (not yet
+// mapped, pre-checked) vs already mapped (disabled/annotated). UI-free so it's unit
+// testable without touching the DOM.
+function annotateProviderAccounts(providerAccounts = [], accountLinks = []) {
+  const mappedByProviderId = new Map(
+    accountLinks.map(l => [String(l.provider_account_id ?? l.providerAccountId ?? ''), l]),
+  );
+  return providerAccounts.map((account) => {
+    const providerAccountId = String(account.providerAccountId ?? account.provider_account_id ?? '');
+    const link = mappedByProviderId.get(providerAccountId);
+    const alreadyMapped = Boolean(link);
+    return {
+      ...account,
+      alreadyMapped,
+      mappedBankAccountName: link ? (link.bank_account_name || '') : '',
+      selectable: !alreadyMapped,
+      preChecked: !alreadyMapped,
+    };
+  });
+}
+
 module.exports = {
   listConnections,
   listAccountLinks,
@@ -160,4 +183,5 @@ module.exports = {
   mapAccount,
   disconnectLocalMapping,
   markAccountLinkSynced,
+  annotateProviderAccounts,
 };

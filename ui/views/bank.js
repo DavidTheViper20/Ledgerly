@@ -3,6 +3,39 @@
 // Bank accounts, account transactions, spend/receive money, transfers,
 // statement import and reconciliation.
 
+// Generate a free 3-digit-style bank account code (e.g. "090") not already used by an
+// existing account, following the convention used by demo data and manual entry.
+function nextBankAccountCode(banks) {
+  const used = new Set(banks.map(b => String(b.code)));
+  for (let n = 90; n < 1000; n++) {
+    const code = String(n).padStart(3, '0');
+    if (!used.has(code)) return code;
+  }
+  return String(Date.now()).slice(-4);
+}
+
+// UI-side mirror of src/services/bank-feed/connections.js#annotateProviderAccounts.
+// The renderer runs with contextIsolation (no Node `require`), so this pure logic is
+// duplicated here; the canonical, unit-tested implementation lives in the service
+// module alongside the main-process bank feed flow.
+function annotateProviderAccounts(providerAccounts = [], accountLinks = []) {
+  const mappedByProviderId = new Map(
+    accountLinks.map(l => [String(l.provider_account_id ?? l.providerAccountId ?? ''), l]),
+  );
+  return providerAccounts.map((account) => {
+    const providerAccountId = String(account.providerAccountId ?? account.provider_account_id ?? '');
+    const link = mappedByProviderId.get(providerAccountId);
+    const alreadyMapped = Boolean(link);
+    return {
+      ...account,
+      alreadyMapped,
+      mappedBankAccountName: link ? (link.bank_account_name || '') : '',
+      selectable: !alreadyMapped,
+      preChecked: !alreadyMapped,
+    };
+  });
+}
+
 VIEWS.bankAccounts = async function (main) {
   const banks = await api('bank.accounts');
   main.innerHTML = `
@@ -12,9 +45,18 @@ VIEWS.bankAccounts = async function (main) {
       <button class="btn" id="btn-transfer" ${banks.length < 2 ? 'disabled' : ''}>Transfer money</button>
       <button class="btn primary" id="btn-add-bank">Add bank account</button>
     </div>
-    ${banks.length === 0 ? `<div class="card"><div class="empty">
-      Add your bank, credit card or cash accounts, then import statements to reconcile.
-    </div></div>` : ''}
+    ${banks.length === 0 ? `<div class="card">
+      <div class="empty" style="padding-bottom:4px">
+        <div style="font-weight:700;font-size:16px;margin-bottom:6px;color:var(--ink)">Connect your bank — import transactions automatically</div>
+        <div style="margin-bottom:14px">Link a bank, credit card or cash account through Ledgerly Cloud, then import statements to reconcile.</div>
+        <div class="btn-row" style="justify-content:center">
+          <button class="btn primary" id="btn-add-bank-hero">Add bank account</button>
+        </div>
+        <div style="margin-top:10px">
+          <a href="#" id="btn-add-manual-hero" style="color:var(--ink-soft);font-size:12.5px;text-decoration:underline">Add manually (no bank feed)</a>
+        </div>
+      </div>
+    </div>` : ''}
     ${banks.map(b => `
       <div class="card">
         <div class="doc-head">
@@ -37,9 +79,12 @@ VIEWS.bankAccounts = async function (main) {
           <a class="btn" href="#/bank/spend?bank=${b.id}">Spend money</a>
           <a class="btn" href="#/bank/receive?bank=${b.id}">Receive money</a>
         </div>
-      </div>`).join('')}`;
+      </div>`).join('')}
+    ${banks.length > 0 ? `<div style="text-align:center;margin-top:6px">
+      <a href="#" id="btn-add-manual-link" style="color:var(--ink-soft);font-size:12.5px;text-decoration:underline">Add manually (no bank feed)</a>
+    </div>` : ''}`;
 
-  document.getElementById('btn-add-bank').addEventListener('click', () => {
+  function openManualForm() {
     const m = modal(`
       <h2>Add bank account</h2>
       <form id="bank-form">
@@ -67,7 +112,128 @@ VIEWS.bankAccounts = async function (main) {
         VIEWS.bankAccounts(main);
       } catch (e) { showError(e); }
     });
-  });
+  }
+
+  // ---------- feed-first "Add bank account" flow ----------
+  async function openFeedFirstModal() {
+    let feed = { configured: false, connections: [], accountLinks: [] };
+    try { feed = await window.ledgerly.bankFeed('status'); } catch { /* older shell */ }
+
+    if (!feed.configured) {
+      const m = modal(`
+        <h2>Add bank account</h2>
+        <p style="color:var(--ink-soft)">
+          Bank feeds connect through Ledgerly Cloud. Set up your cloud account first.
+        </p>
+        <div class="btn-row">
+          <a class="btn primary" href="#/settings" id="feed-go-settings">Go to Settings</a>
+          <button class="btn" type="button" id="feed-add-manual">Add manually (no bank feed)</button>
+          <button class="btn" type="button" id="feed-close">Cancel</button>
+        </div>`);
+      m.querySelector('#feed-go-settings').addEventListener('click', closeModal);
+      m.querySelector('#feed-add-manual').addEventListener('click', () => { closeModal(); openManualForm(); });
+      m.querySelector('#feed-close').addEventListener('click', closeModal);
+      return;
+    }
+
+    try {
+      await window.ledgerly.bankFeed('startConnect', { action: 'connect' });
+    } catch (e) { showError(e); return; }
+
+    const m = modal(`
+      <h2>Add bank account</h2>
+      <p style="color:var(--ink-soft)">
+        Finish connecting your bank in the browser, then come back here.
+      </p>
+      <div class="btn-row">
+        <button class="btn primary" type="button" id="feed-fetch-accounts">I've connected — fetch accounts</button>
+        <button class="btn" type="button" id="feed-add-manual">Add manually (no bank feed)</button>
+        <button class="btn" type="button" id="feed-close">Cancel</button>
+      </div>
+      <div id="feed-provider-list" style="margin-top:14px"></div>`);
+    m.querySelector('#feed-add-manual').addEventListener('click', () => { closeModal(); openManualForm(); });
+    m.querySelector('#feed-close').addEventListener('click', closeModal);
+    m.querySelector('#feed-fetch-accounts').addEventListener('click', () => loadProviderAccounts(m));
+  }
+
+  async function loadProviderAccounts(m) {
+    const list = m.querySelector('#feed-provider-list');
+    list.innerHTML = '<div class="empty">Loading accounts...</div>';
+    try {
+      const [rawAccounts, latestStatus] = await Promise.all([
+        window.ledgerly.bankFeed('listProviderAccounts', {}),
+        window.ledgerly.bankFeed('status'),
+      ]);
+      const accounts = annotateProviderAccounts(rawAccounts, latestStatus.accountLinks || []);
+      if (!accounts.length) {
+        list.innerHTML = '<div class="empty">No provider accounts returned yet</div>';
+        return;
+      }
+      list.innerHTML = `
+        <form id="feed-accounts-form">
+          <table class="data">
+            <thead><tr><th></th><th>Account</th><th>Number</th><th>Type</th><th></th></tr></thead>
+            <tbody>${accounts.map((a, idx) => `
+              <tr>
+                <td><input type="checkbox" class="feed-acc-check" data-idx="${idx}"
+                  ${a.selectable ? (a.preChecked ? 'checked' : '') : 'disabled'} /></td>
+                <td>${esc(a.providerAccountName || a.providerAccountId)}</td>
+                <td>${esc(a.providerAccountNumber || '')}</td>
+                <td>${esc(a.providerAccountType || '')}</td>
+                <td>${a.alreadyMapped ? `<span class="badge MATCHED">Already linked${a.mappedBankAccountName ? ` — ${esc(a.mappedBankAccountName)}` : ''}</span>` : ''}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+          <div class="btn-row" style="margin-top:12px">
+            <button class="btn primary" type="submit">Add selected accounts</button>
+            <button class="btn" type="button" id="feed-refresh-accounts">Refresh accounts</button>
+          </div>
+        </form>`;
+      list.querySelector('#feed-refresh-accounts').addEventListener('click', () => loadProviderAccounts(m));
+      list.querySelector('#feed-accounts-form').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const checked = [...list.querySelectorAll('.feed-acc-check:checked')].map(c => accounts[Number(c.dataset.idx)]);
+        if (!checked.length) return toast('Select at least one account', 'error');
+        const latest = await window.ledgerly.bankFeed('status');
+        const connection = (latest.connections || []).find(c => c.status !== 'revoked' && c.provider_user_id);
+        if (!connection) return showError(new Error('Connect a bank account first'));
+
+        let addedCount = 0;
+        for (const account of checked) {
+          try {
+            const banksNow = await api('bank.accounts');
+            const newAccount = await api('bank.createAccount', {
+              name: account.providerAccountName || account.providerAccountId,
+              code: nextBankAccountCode(banksNow),
+              description: '',
+            });
+            await window.ledgerly.bankFeed('mapProviderAccount', {
+              connectionId: connection.id,
+              providerAccountId: account.providerAccountId,
+              providerAccountName: account.providerAccountName,
+              providerAccountNumber: account.providerAccountNumber,
+              providerAccountType: account.providerAccountType,
+              bankAccountId: newAccount.id,
+            });
+            toast(`Added ${account.providerAccountName || account.providerAccountId}`, 'success');
+            addedCount++;
+          } catch (e) { showError(e); }
+        }
+        if (addedCount > 0) {
+          closeModal();
+          VIEWS.bankAccounts(main);
+        } else {
+          loadProviderAccounts(m);
+        }
+      });
+    } catch (e) {
+      list.innerHTML = `<div class="empty">${esc(e.message || e)}</div>`;
+    }
+  }
+
+  document.getElementById('btn-add-bank').addEventListener('click', openFeedFirstModal);
+  document.getElementById('btn-add-bank-hero')?.addEventListener('click', openFeedFirstModal);
+  document.getElementById('btn-add-manual-hero')?.addEventListener('click', (ev) => { ev.preventDefault(); openManualForm(); });
+  document.getElementById('btn-add-manual-link')?.addEventListener('click', (ev) => { ev.preventDefault(); openManualForm(); });
 
   document.getElementById('btn-transfer')?.addEventListener('click', () => {
     const m = modal(`
