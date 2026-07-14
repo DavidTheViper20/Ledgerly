@@ -1,8 +1,10 @@
 # Ledgerly
 
-A free, open desktop accounting application for small businesses — invoicing, bills,
-bank reconciliation, double-entry ledger, payroll, projects and financial reporting.
-All data stays in a local SQLite file on your machine; no subscription, no cloud account.
+A desktop accounting application for small businesses — invoicing, bills, bank
+reconciliation, double-entry ledger, payroll and financial reporting. Local-first
+by design: your ledger lives in a SQLite file on your machine. An optional
+**Ledgerly Cloud** account adds live bank feeds (via Basiq open banking) — the
+cloud brokers bank consent and provider credentials but never owns your books.
 
 **Localised for Australia (Victoria):** 10% GST tax codes (GST on Income/Expenses,
 GST Free, BAS Excluded), financial year ending 30 June, AUD base currency, ABN on
@@ -38,7 +40,17 @@ invoices, BAS activity-statement summary (G1/1A/1B/W1/W2), PAYG withholding and
   wage payment. W1/W2 flow onto the BAS summary
 - Note: Single Touch Payroll lodgement requires ATO-certified software and is out of scope
 
-**Projects**
+**Tax (AU)**
+- Activity statement inbox: BAS per GST period (monthly/quarterly/annually) plus
+  monthly IAS for monthly PAYG withholders — in progress / needs attention /
+  completed, with due dates and overdue flags
+- Simpler or Full BAS labels; GST on an accruals or cash basis; PAYG withholding
+  and income-tax instalment methods; FTC/WET/LCT/FBT obligation toggles
+- Taxable Payments Annual Report (TPAR) by supplier and financial year
+- Lodgement is manual (copy labels into ATO Online Services, then mark as
+  lodged) — electronic lodgement requires ATO DSP registration
+
+**Projects** (optional, off by default — enable in Settings → Advanced)
 - Projects with customers, default hourly rates, time entries
 - Invoice unbilled time into a draft invoice in one step
 - Profitability per project: invoice revenue vs bill/spend/expense-claim costs
@@ -89,16 +101,21 @@ create a spend, receive, transfer, or split transaction during reconciliation.
 
 ## Secure bank feed connection
 
-The live Basiq connection flow is broker-backed. Put the Basiq API key in the
-server-side Electron/main-process environment, not in Settings:
+Live bank feeds run through **Ledgerly Cloud** (the Node server under `server/`),
+which holds the Basiq API key, provider tokens, consent state and audit logs —
+never the desktop app, its renderer, or your local database. The desktop
+authenticates to the cloud (OIDC PKCE sign-in, or a static token for
+single-user/dev setups) and pulls normalised transactions into local statement
+lines.
 
-```bash
-LEDGERLY_BASIQ_API_KEY=your_basiq_api_key npm start
-```
+To connect: Bank accounts → Add bank account, complete Basiq consent in the
+system browser, select the returned provider accounts (ledger accounts are
+created and mapped automatically), then sync. Repeat syncs are incremental.
+Consent can be managed, revoked, or fully deleted from Settings → Bank feeds.
 
-Then use Bank accounts -> Connect bank account, complete Basiq consent in the
-system browser, map the returned provider account to a Ledgerly bank account, and
-sync. The renderer never receives the Basiq API key or server access token.
+To run the cloud locally see `docs/release/local-staging.md`; for hosted staging
+see `docs/release/staging-cloud-deployment.md` (currently scaffolded, not
+deployed).
 
 ## Getting started
 
@@ -109,7 +126,7 @@ no native compilation needed).
 npm install
 npm start          # run the app (data stored in your OS user-data folder)
 npm run demo       # run with a throwaway database full of sample data
-npm test           # unit tests for the accounting core (39 tests)
+npm test           # unit tests for the accounting core and services
 npm run smoke      # automated UI tour: every screen + scripted interactions
 ```
 
